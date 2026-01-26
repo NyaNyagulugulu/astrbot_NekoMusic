@@ -37,7 +37,7 @@ class MusicSearchDrawer:
     PADDING = 25
     HEADER_HEIGHT = 100
     ITEM_HEIGHT = 120
-    FOOTER_HEIGHT = 40
+    FOOTER_HEIGHT = 60
 
     def __init__(self):
         self._load_fonts()
@@ -232,13 +232,22 @@ class MusicSearchDrawer:
 
                 y_offset += self.ITEM_HEIGHT
 
-            # 绘制底部版权
-            footer_text = "Neko云音乐 - Powered by 不穿胖次の小奶猫"
-            footer_text = "music.cnmsb.xin 蜀ICP备2025177767号-1"
-            footer_bbox = draw.textbbox((0, 0), footer_text, font=self.font_footer)
-            footer_width = footer_bbox[2] - footer_bbox[0]
-            footer_x = (self.IMG_WIDTH - footer_width) // 2
-            draw.text((footer_x, total_height - self.FOOTER_HEIGHT + 10), footer_text,
+            # 绘制底部版权（两行）
+            footer_text1 = "Neko云音乐 - Powered by 不穿胖次の小奶猫"
+            footer_text2 = "music.cnmsb.xin 蜀ICP备2025177767号-1"
+
+            # 第一行
+            footer_bbox1 = draw.textbbox((0, 0), footer_text1, font=self.font_footer)
+            footer_width1 = footer_bbox1[2] - footer_bbox1[0]
+            footer_x1 = (self.IMG_WIDTH - footer_width1) // 2
+            draw.text((footer_x1, total_height - self.FOOTER_HEIGHT + 8), footer_text1,
+                     font=self.font_footer, fill=self.COLOR_FOOTER)
+
+            # 第二行
+            footer_bbox2 = draw.textbbox((0, 0), footer_text2, font=self.font_footer)
+            footer_width2 = footer_bbox2[2] - footer_bbox2[0]
+            footer_x2 = (self.IMG_WIDTH - footer_width2) // 2
+            draw.text((footer_x2, total_height - self.FOOTER_HEIGHT + 26), footer_text2,
                      font=self.font_footer, fill=self.COLOR_FOOTER)
 
             # 转换为 bytes
