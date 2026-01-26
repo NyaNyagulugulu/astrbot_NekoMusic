@@ -35,11 +35,14 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 构建转发消息列表
-                        forward_messages = []
+                        # 获取 bot 自己的 QQ 号
+                        bot_self_id = event.get_self_id()
+                        
+                        # 构建要发送给 bot 自己的消息列表
+                        messages_to_send = []
                         
                         # 添加标题消息
-                        forward_messages.append([
+                        messages_to_send.append([
                             Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲")
                         ])
                         
@@ -51,17 +54,37 @@ class NekoMusicPlugin(Star):
                                 song_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
                             # 添加歌曲信息
                             song_chain.append(Comp.Plain(song_info["text"]))
-                            forward_messages.append(song_chain)
+                            messages_to_send.append(song_chain)
                         
-                        # 尝试使用合并转发
+                        # 先发送消息给 bot 自己的私聊
+                        sent_message_ids = []
+                        for msg_chain in messages_to_send:
+                            try:
+                                msg_result = await event.bot.send_private_msg(user_id=int(bot_self_id), message=msg_chain)
+                                sent_message_ids.append(msg_result['message_id'])
+                            except Exception as send_error:
+                                logger.error(f"发送私聊消息失败: {str(send_error)}")
+                        
+                        # 等待一小段时间确保消息发送完成
+                        await asyncio.sleep(0.5)
+                        
+                        # 将发送的消息合并转发到源聊天
                         try:
                             # 获取群组ID或好友ID
                             group_id = event.get_group_id()
                             if group_id:
-                                await event.bot.send_group_forward_msg(group_id=group_id, messages=forward_messages)
+                                # 群聊转发
+                                await event.bot.send_group_forward_msg(
+                                    group_id=group_id,
+                                    messages=messages_to_send
+                                )
                             else:
+                                # 私聊转发
                                 user_id = event.get_sender_id()
-                                await event.bot.send_private_forward_msg(user_id=user_id, messages=forward_messages)
+                                await event.bot.send_private_forward_msg(
+                                    user_id=user_id,
+                                    messages=messages_to_send
+                                )
                         except Exception as forward_error:
                             logger.error(f"合并转发失败: {str(forward_error)}")
                             # 如果合并转发失败,回退到普通消息链
