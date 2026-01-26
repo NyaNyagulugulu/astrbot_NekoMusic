@@ -396,10 +396,7 @@ class Main(Star):
 
         # 先返回播放链接
         yield event.chain_result([
-            Comp.Plain("🎶 Neko云音乐。听见好音乐\n"),
-            Comp.Plain(f"🔗 {play_url}\n"),
-            Comp.Plain(f"🎵 正在发送音乐: {song_name} 请稍后\n"),
-            Comp.Plain(f"平台内均为无损音质，发送可能较慢，请耐心等待..."),
+            Comp.Plain(f"🎵 正在播放: {song_name}\n🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
         ])
 
         # 下载音频并发送语音
