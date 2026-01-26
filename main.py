@@ -35,21 +35,43 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 构建消息链
-                        message_chain = []
+                        # 构建转发消息列表
+                        forward_messages = []
                         
-                        # 添加标题
-                        message_chain.append(Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n\n"))
+                        # 添加标题消息
+                        forward_messages.append([
+                            Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲")
+                        ])
                         
                         # 添加每首歌的封面和信息
                         for song_info in result_data.get("songs", []):
+                            song_chain = []
                             # 添加封面图片
                             if song_info.get("cover_url"):
-                                message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
+                                song_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
                             # 添加歌曲信息
-                            message_chain.append(Comp.Plain(song_info["text"] + "\n"))
+                            song_chain.append(Comp.Plain(song_info["text"]))
+                            forward_messages.append(song_chain)
                         
-                        yield event.chain_result(message_chain)
+                        # 尝试使用合并转发
+                        try:
+                            # 获取群组ID或好友ID
+                            group_id = event.get_group_id()
+                            if group_id:
+                                await event.bot.send_group_forward_msg(group_id=group_id, messages=forward_messages)
+                            else:
+                                user_id = event.get_sender_id()
+                                await event.bot.send_private_forward_msg(user_id=user_id, messages=forward_messages)
+                        except Exception as forward_error:
+                            logger.error(f"合并转发失败: {str(forward_error)}")
+                            # 如果合并转发失败,回退到普通消息链
+                            message_chain = []
+                            message_chain.append(Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n\n"))
+                            for song_info in result_data.get("songs", []):
+                                if song_info.get("cover_url"):
+                                    message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
+                                message_chain.append(Comp.Plain(song_info["text"] + "\n"))
+                            yield event.chain_result(message_chain)
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
