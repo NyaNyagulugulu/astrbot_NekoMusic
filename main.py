@@ -213,7 +213,7 @@ class MusicSearchDrawer:
                             if cover_response.status == 200:
                                 cover_data = await cover_response.read()
                                 cover_img = Image.open(io.BytesIO(cover_data))
-                                cover_img = cover_img.resize((110, 110), Image.Resampling.LANCZOS)
+                                cover_img = cover_img.resize((100, 100), Image.Resampling.LANCZOS)
                                 img.paste(cover_img, (self.PADDING + 55, y_offset + 10))
                     except Exception as e:
                         logger.error(f"下载封面失败: {str(e)}")
