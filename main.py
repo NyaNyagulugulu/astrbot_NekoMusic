@@ -46,20 +46,53 @@ class MusicSearchDrawer:
     def _load_fonts(self):
         """加载字体"""
         try:
+            loaded = False
             for font_path in self.FONT_PATHS:
                 try:
-                    self.font_title = ImageFont.truetype(font_path, 36)
-                    self.font_subtitle = ImageFont.truetype(font_path, 18)
-                    self.font_song_name = ImageFont.truetype(font_path, 22)
-                    self.font_song_info = ImageFont.truetype(font_path, 16)
-                    self.font_footer = ImageFont.truetype(font_path, 12)
-                    break
-                except:
+                    logger.info(f"尝试加载字体: {font_path}")
+
+                    # 尝试多种加载方式
+                    # 方式1: 指定索引加载 TTC 字体
+                    try:
+                        self.font_title = ImageFont.truetype(font_path, 36, index=0)
+                        self.font_subtitle = ImageFont.truetype(font_path, 18, index=0)
+                        self.font_song_name = ImageFont.truetype(font_path, 22, index=0)
+                        self.font_song_info = ImageFont.truetype(font_path, 16, index=0)
+                        self.font_footer = ImageFont.truetype(font_path, 12, index=0)
+                        logger.info(f"成功加载字体（方式1）: {font_path}")
+                        loaded = True
+                        break
+                    except:
+                        pass
+
+                    # 方式2: 不指定索引
+                    try:
+                        self.font_title = ImageFont.truetype(font_path, 36)
+                        self.font_subtitle = ImageFont.truetype(font_path, 18)
+                        self.font_song_name = ImageFont.truetype(font_path, 22)
+                        self.font_song_info = ImageFont.truetype(font_path, 16)
+                        self.font_footer = ImageFont.truetype(font_path, 12)
+                        logger.info(f"成功加载字体（方式2）: {font_path}")
+                        loaded = True
+                        break
+                    except:
+                        pass
+
+                except Exception as e:
+                    logger.warning(f"加载字体 {font_path} 失败: {str(e)}")
                     continue
-            else:
-                raise Exception("无法加载任何字体")
+
+            if not loaded:
+                logger.warning("所有自定义字体加载失败，使用默认字体（中文可能无法正常显示）")
+                self.font_title = ImageFont.load_default()
+                self.font_subtitle = ImageFont.load_default()
+                self.font_song_name = ImageFont.load_default()
+                self.font_song_info = ImageFont.load_default()
+                self.font_footer = ImageFont.load_default()
         except Exception as e:
-            logger.error(f"加载字体失败: {e}")
+            logger.error(f"字体加载过程发生错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             self.font_title = ImageFont.load_default()
             self.font_subtitle = ImageFont.load_default()
             self.font_song_name = ImageFont.load_default()
