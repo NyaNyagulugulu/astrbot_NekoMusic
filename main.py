@@ -48,9 +48,22 @@ class MusicSearchDrawer:
 
     def _load_fonts(self):
         """加载字体"""
+        import os
         try:
             loaded = False
             for font_path in self.FONT_PATHS:
+                # 检查文件是否存在
+                if not os.path.exists(font_path):
+                    logger.warning(f"字体文件不存在: {font_path}")
+                    continue
+
+                # 检查文件是否可读
+                if not os.access(font_path, os.R_OK):
+                    logger.warning(f"字体文件不可读: {font_path}")
+                    continue
+
+                logger.info(f"字体文件存在且可读: {font_path}")
+
                 try:
                     logger.info(f"尝试加载字体: {font_path}")
 
@@ -65,7 +78,8 @@ class MusicSearchDrawer:
                         logger.info(f"成功加载字体（方式1）: {font_path}")
                         loaded = True
                         break
-                    except:
+                    except Exception as e1:
+                        logger.warning(f"方式1加载失败 {font_path}: {str(e1)}")
                         pass
 
                     # 方式2: 不指定索引
@@ -78,11 +92,14 @@ class MusicSearchDrawer:
                         logger.info(f"成功加载字体（方式2）: {font_path}")
                         loaded = True
                         break
-                    except:
+                    except Exception as e2:
+                        logger.warning(f"方式2加载失败 {font_path}: {str(e2)}")
                         pass
 
                 except Exception as e:
                     logger.warning(f"加载字体 {font_path} 失败: {str(e)}")
+                    import traceback
+                    logger.warning(traceback.format_exc())
                     continue
 
             if not loaded:
