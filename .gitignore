@@ -208,3 +208,5 @@ __marimo__/
 
 # 参考
 demo.py
+demo/
+demo/*
