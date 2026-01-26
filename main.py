@@ -262,7 +262,7 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.4.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.5.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -410,10 +410,24 @@ class Main(Star):
                     if audio_response.status == 200:
                         audio_data = await audio_response.read()
                         logger.info(f"音频数据大小: {len(audio_data)} bytes")
-                        # 发送语音（使用 Record 组件）
+
+                        # 保存为临时文件
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+                            temp_file.write(audio_data)
+                            temp_path = temp_file.name
+
+                        # 发送语音（使用 Record 组件，传入文件路径）
                         yield event.chain_result([
-                            Comp.Record.fromBytes(audio_data)
+                            Comp.Record(file=temp_path)
                         ])
+
+                        # 清理临时文件
+                        import os
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
                     else:
                         response_text = await audio_response.text()
                         logger.error(f"下载音频失败,状态码: {audio_response.status}, 响应: {response_text}")
