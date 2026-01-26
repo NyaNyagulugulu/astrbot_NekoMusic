@@ -16,7 +16,7 @@ class MusicSearchDrawer:
 
     # 常量定义
     FONT_PATHS = [
-        FONT_PATH_REGULAR := os.path.join(os.path.dirname(__file__), "DouyinSansBold.otf"),
+        FONT_PATH_REGULAR := os.path.join(os.path.dirname(__file__), "ZCOOLKuaiLe-Regular-Cx0eLuEs.ttf"),
         FONT_PATH_BOLD := FONT_PATH_REGULAR,
     ]
 
