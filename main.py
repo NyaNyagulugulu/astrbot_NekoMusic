@@ -3,6 +3,7 @@ import aiohttp
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
 
 
 @register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.0.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
@@ -34,12 +35,17 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 发送每首歌的封面图片
-                        for cover_url in result_data.get("cover_urls", []):
-                            yield event.image_result(cover_url)
+                        # 构建消息链
+                        message_chain = []
                         
-                        # 发送文本结果
-                        yield event.plain_result(result_data["text"])
+                        # 添加封面图片
+                        for cover_url in result_data.get("cover_urls", []):
+                            message_chain.append(Comp.Image.fromURL(url=cover_url))
+                        
+                        # 添加文本
+                        message_chain.append(Comp.Plain(result_data["text"]))
+                        
+                        yield event.chain_result(message_chain)
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
