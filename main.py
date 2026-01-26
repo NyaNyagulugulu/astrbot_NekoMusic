@@ -7,7 +7,7 @@ import astrbot.api.message_components as Comp
 
 
 @register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.2.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
-class NekoMusicPlugin(Star):
+class Main(Star):
     def __init__(self, context: Context):
         super().__init__(context)
 
