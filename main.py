@@ -1,40 +1,29 @@
 import asyncio
 import aiohttp
-from astrbot import logger, AstrMessageEvent, MessageChain, Plain
-from astrbot.plugin import Plugin
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 
 
-class NekoMusicPlugin(Plugin):
-    def __init__(self):
-        super().__init__()
-        self.plugin_name = "Neko云音乐点歌"
-        self.plugin_desc = "通过点歌指令搜索音乐"
-        self.plugin_version = "1.0.0"
-        self.plugin_author = "NyaNyagulugulu"
-        self.plugin_type = "message"
-        self.plugin_priority = 10
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.0.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+class NekoMusicPlugin(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
 
-    async def on_message(self, event: AstrMessageEvent):
-        """监听消息事件"""
+    @filter.command("点歌")
+    async def search_music(self, event: AstrMessageEvent):
+        """搜索音乐"""
         # 获取消息文本
         msg_text = event.message_str
         
-        # 检查是否为点歌指令
-        if msg_text.startswith("点歌"):
-            # 提取搜索关键词
-            keyword = msg_text[2:].strip()
-            
-            if not keyword:
-                await event.send_message(MessageChain([
-                    Plain("请输入要搜索的歌曲名称,例如:点歌 Lemon")
-                ]))
-                return
-            
-            # 搜索音乐
-            await self.search_music(event, keyword)
-
-    async def search_music(self, event: AstrMessageEvent, keyword: str):
-        """调用 API 搜索音乐"""
+        # 提取搜索关键词
+        keyword = msg_text[2:].strip()
+        
+        if not keyword:
+            yield event.plain_result("请输入要搜索的歌曲名称,例如:点歌 Lemon")
+            return
+        
+        # 调用 API 搜索音乐
         api_url = "https://music.cnmsb.xin/api/music/search"
         json_data = {"query": keyword}
         
@@ -43,31 +32,23 @@ class NekoMusicPlugin(Plugin):
                 async with session.post(api_url, json=json_data, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        await self.handle_search_result(event, data)
+                        result = self.handle_search_result(data)
+                        yield event.plain_result(result)
                     else:
-                        await event.send_message(MessageChain([
-                            Plain(f"搜索失败,API 返回状态码: {response.status}")
-                        ]))
+                        yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
-            await event.send_message(MessageChain([
-                Plain("搜索超时,请稍后重试")
-            ]))
+            yield event.plain_result("搜索超时,请稍后重试")
         except Exception as e:
             logger.error(f"搜索音乐时发生错误: {str(e)}")
-            await event.send_message(MessageChain([
-                Plain(f"搜索失败: {str(e)}")
-            ]))
+            yield event.plain_result(f"搜索失败: {str(e)}")
 
-    async def handle_search_result(self, event: AstrMessageEvent, data: dict):
+    def handle_search_result(self, data: dict) -> str:
         """处理搜索结果"""
         if data.get("success") and data.get("results"):
             songs = data["results"]
             
             if not songs:
-                await event.send_message(MessageChain([
-                    Plain("未找到相关歌曲")
-                ]))
-                return
+                return "未找到相关歌曲"
             
             # 构建回复消息
             reply_text = f"🎵 搜索结果:\n\n"
@@ -86,11 +67,6 @@ class NekoMusicPlugin(Plugin):
                 reply_text += "\n"
             
             reply_text += f"共找到 {len(songs)} 首歌曲"
-            
-            await event.send_message(MessageChain([
-                Plain(reply_text)
-            ]))
+            return reply_text
         else:
-            await event.send_message(MessageChain([
-                Plain(f"搜索失败: {data.get('message', '未知错误')}")
-            ]))
+            return f"搜索失败: {data.get('message', '未知错误')}"
