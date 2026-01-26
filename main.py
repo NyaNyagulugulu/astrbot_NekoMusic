@@ -307,35 +307,35 @@ class Main(Star):
     def handle_search_result(self, data: dict) -> dict:
         """处理搜索结果"""
         result = {"songs": [], "total": 0}
-        
+
         if data.get("success") and data.get("results"):
             songs = data["results"]
-            
+
             if not songs:
                 result["songs"] = [{"cover_url": None, "text": "未找到相关歌曲"}]
                 return result
-            
+
             result["total"] = len(songs)
-            
-            # 显示前 5 首歌曲
-            for idx, song in enumerate(songs[:5], 1):
+
+            # 显示所有歌曲
+            for idx, song in enumerate(songs, 1):
                 song_name = song.get("name", song.get("title", "未知歌曲"))
                 artist = song.get("artist", song.get("singer", song.get("ar", "未知歌手")))
                 album = song.get("album", song.get("al", "未知专辑"))
                 song_id = song.get("id", "")
-                
+
                 # 使用封面 API 获取封面图片
                 cover_url = None
                 if song_id:
                     cover_url = f"https://music.cnmsb.xin/api/music/cover/{song_id}"
-                
+
                 # 构建歌曲信息文本
                 song_text = f"🎶 {song_name}\n"
                 song_text += f"🎤 歌手: {artist}\n"
                 song_text += f"💿 专辑: {album}\n"
                 if song_id:
                     song_text += f"🆔 ID: {song_id}"
-                
+
                 result["songs"].append({
                     "cover_url": cover_url,
                     "text": song_text
