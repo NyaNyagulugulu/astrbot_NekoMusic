@@ -32,8 +32,14 @@ class NekoMusicPlugin(Star):
                 async with session.post(api_url, json=json_data, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        result = self.handle_search_result(data)
-                        yield event.plain_result(result)
+                        result_data = self.handle_search_result(data)
+                        
+                        # 如果有封面图片URL,发送图片
+                        if result_data.get("cover_url"):
+                            yield event.image_result(result_data["cover_url"])
+                            yield event.plain_result(result_data["text"])
+                        else:
+                            yield event.plain_result(result_data["text"])
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
@@ -42,13 +48,22 @@ class NekoMusicPlugin(Star):
             logger.error(f"搜索音乐时发生错误: {str(e)}")
             yield event.plain_result(f"搜索失败: {str(e)}")
 
-    def handle_search_result(self, data: dict) -> str:
+    def handle_search_result(self, data: dict) -> dict:
         """处理搜索结果"""
+        result = {"text": "", "cover_url": None}
+        
         if data.get("success") and data.get("results"):
             songs = data["results"]
             
             if not songs:
-                return "未找到相关歌曲"
+                result["text"] = "未找到相关歌曲"
+                return result
+            
+            # 获取第一首歌的封面
+            first_song = songs[0]
+            cover_url = first_song.get("cover", first_song.get("pic", first_song.get("album_pic", "")))
+            if cover_url:
+                result["cover_url"] = cover_url
             
             # 构建回复消息
             reply_text = f"🎵 搜索结果:\n\n"
@@ -67,6 +82,8 @@ class NekoMusicPlugin(Star):
                 reply_text += "\n"
             
             reply_text += f"共找到 {len(songs)} 首歌曲"
-            return reply_text
+            result["text"] = reply_text
         else:
-            return f"搜索失败: {data.get('message', '未知错误')}"
+            result["text"] = f"搜索失败: {data.get('message', '未知错误')}"
+        
+        return result
