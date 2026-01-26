@@ -1,6 +1,13 @@
-name: astrbot_nekomusic # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: Neko云音乐插件 # 用于展示的名字，可以是方便人类阅读的名字
-desc: Neko云音乐群内点歌插件 # 插件简短描述
-version: v1.1 # 插件版本号。
-author: 不穿胖次の小奶猫（NyaNyagulugulu） # 作者
-repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic # 插件的仓库地址
+name: astrbot_nekomusic
+display_name: Neko云音乐点歌插件
+desc: 基于 Neko云音乐 API 的群内点歌插件,支持搜索音乐并显示封面
+version: v1.1.0
+author: 不穿胖次の小奶猫（NyaNyagulugulu）
+repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
+homepage: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
+tags:
+  - 音乐
+  - 点歌
+  - 娱乐
+  - 搜索
+license: MIT
