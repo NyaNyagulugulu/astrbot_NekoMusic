@@ -1,7 +1,1 @@
-{
-    "bot": {
-        "type": "bot自己的qq号",
-        "default": 123456,
-        "hint": "必须设置用于合并转发"
-    }
-}
+{"bot": {"type": "int", "default": 123456, "hint": "必须设置用于合并转发"}}
