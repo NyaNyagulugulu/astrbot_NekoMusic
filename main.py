@@ -1,5 +1,7 @@
-import asyncio
 import aiohttp
+import asyncio
+import io
+from PIL import Image, ImageDraw, ImageFont
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -16,85 +18,35 @@ class Main(Star):
         """搜索音乐"""
         # 获取消息文本
         msg_text = event.message_str
-        
+
         # 提取搜索关键词
         keyword = msg_text[2:].strip()
-        
+
         if not keyword:
             yield event.plain_result("请输入要搜索的歌曲名称,例如:点歌 Lemon")
             return
-        
+
         # 调用 API 搜索音乐
         api_url = "https://music.cnmsb.xin/api/music/search"
         json_data = {"query": keyword}
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(api_url, json=json_data, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         result_data = self.handle_search_result(data)
-                        
-                        # 获取 bot 自己的 QQ 号
-                        bot_self_id = event.get_self_id()
-                        
-                        # 构建要发送给 bot 自己的消息列表
-                        messages_to_send = []
-                        
-                        # 添加标题消息
-                        messages_to_send.append([
-                            Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲")
-                        ])
-                        
-                        # 添加每首歌的封面和信息
-                        for song_info in result_data.get("songs", []):
-                            song_chain = []
-                            # 添加封面图片
-                            if song_info.get("cover_url"):
-                                song_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
-                            # 添加歌曲信息
-                            song_chain.append(Comp.Plain(song_info["text"]))
-                            messages_to_send.append(song_chain)
-                        
-                        # 先发送消息给 bot 自己的私聊
-                        sent_message_ids = []
-                        for msg_chain in messages_to_send:
-                            try:
-                                msg_result = await event.bot.send_private_msg(user_id=int(bot_self_id), message=msg_chain)
-                                sent_message_ids.append(msg_result['message_id'])
-                            except Exception as send_error:
-                                logger.error(f"发送私聊消息失败: {str(send_error)}")
-                        
-                        # 等待一小段时间确保消息发送完成
-                        await asyncio.sleep(0.5)
-                        
-                        # 将发送的消息合并转发到源聊天
-                        try:
-                            # 获取群组ID或好友ID
-                            group_id = event.get_group_id()
-                            if group_id:
-                                # 群聊转发
-                                await event.bot.send_group_forward_msg(
-                                    group_id=group_id,
-                                    messages=messages_to_send
-                                )
-                            else:
-                                # 私聊转发
-                                user_id = event.get_sender_id()
-                                await event.bot.send_private_forward_msg(
-                                    user_id=user_id,
-                                    messages=messages_to_send
-                                )
-                        except Exception as forward_error:
-                            logger.error(f"合并转发失败: {str(forward_error)}")
-                            # 如果合并转发失败,回退到普通消息链
-                            message_chain = []
-                            message_chain.append(Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n\n"))
-                            for song_info in result_data.get("songs", []):
-                                if song_info.get("cover_url"):
-                                    message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
-                                message_chain.append(Comp.Plain(song_info["text"] + "\n"))
-                            yield event.chain_result(message_chain)
+
+                        # 合成图片
+                        image_bytes = await self.create_search_result_image(keyword, result_data, session)
+
+                        if image_bytes:
+                            yield event.chain_result([
+                                Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲"),
+                                Comp.Image.fromBase64(image_bytes)
+                            ])
+                        else:
+                            yield event.plain_result("图片生成失败，请稍后重试")
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
@@ -102,6 +54,109 @@ class Main(Star):
         except Exception as e:
             logger.error(f"搜索音乐时发生错误: {str(e)}")
             yield event.plain_result(f"搜索失败: {str(e)}")
+
+    async def create_search_result_image(self, keyword: str, result_data: dict, session) -> str:
+        """创建搜索结果图片"""
+        try:
+            # 设置图片尺寸
+            img_width = 600
+            padding = 20
+            item_height = 120
+            header_height = 80
+
+            # 计算总高度
+            total_items = len(result_data.get("songs", []))
+            total_height = header_height + (total_items * item_height) + padding * 2
+
+            # 创建白色背景图片
+            img = Image.new('RGB', (img_width, total_height), color=(255, 255, 255))
+            draw = ImageDraw.Draw(img)
+
+            # 尝试加载中文字体，如果失败使用默认字体
+            try:
+                # Windows 常见中文字体
+                font_paths = [
+                    "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
+                    "C:/Windows/Fonts/simhei.ttf",  # 黑体
+                    "C:/Windows/Fonts/simsun.ttc",  # 宋体
+                ]
+                title_font = None
+                text_font = None
+
+                for font_path in font_paths:
+                    try:
+                        title_font = ImageFont.truetype(font_path, 28)
+                        text_font = ImageFont.truetype(font_path, 18)
+                        break
+                    except:
+                        continue
+
+                if title_font is None:
+                    title_font = ImageFont.load_default()
+                    text_font = ImageFont.load_default()
+            except:
+                title_font = ImageFont.load_default()
+                text_font = ImageFont.load_default()
+
+            # 绘制标题
+            title_text = f"🎵 搜索结果: {keyword}"
+            title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
+            title_width = title_bbox[2] - title_bbox[0]
+            title_x = (img_width - title_width) // 2
+            draw.text((title_x, padding), title_text, fill=(50, 50, 50), font=title_font)
+
+            subtitle_text = f"共找到 {result_data.get('total', 0)} 首歌曲"
+            subtitle_bbox = draw.textbbox((0, 0), subtitle_text, font=text_font)
+            subtitle_width = subtitle_bbox[2] - subtitle_bbox[0]
+            subtitle_x = (img_width - subtitle_width) // 2
+            draw.text((subtitle_x, padding + 40), subtitle_text, fill=(100, 100, 100), font=text_font)
+
+            # 绘制分割线
+            draw.line([(padding, header_height - 10), (img_width - padding, header_height - 10)], fill=(200, 200, 200), width=2)
+
+            # 下载封面并绘制每首歌曲信息
+            y_offset = header_height
+            for idx, song_info in enumerate(result_data.get("songs", []), 1):
+                # 绘制序号
+                draw.text((padding, y_offset + 10), f"{idx}.", fill=(50, 50, 50), font=title_font)
+
+                # 下载封面图片
+                cover_url = song_info.get("cover_url")
+                if cover_url:
+                    try:
+                        async with session.get(cover_url, timeout=5) as cover_response:
+                            if cover_response.status == 200:
+                                cover_data = await cover_response.read()
+                                cover_img = Image.open(io.BytesIO(cover_data))
+                                cover_img = cover_img.resize((100, 100), Image.Resampling.LANCZOS)
+                                img.paste(cover_img, (50, y_offset + 10))
+                    except:
+                        pass
+
+                # 绘制歌曲信息
+                text_x = 160
+                text_lines = song_info.get("text", "").split('\n')
+                line_y = y_offset + 10
+
+                for line in text_lines:
+                    draw.text((text_x, line_y), line, fill=(80, 80, 80), font=text_font)
+                    line_y += 25
+
+                # 绘制分割线
+                y_offset += item_height
+                if idx < total_items:
+                    draw.line([(padding, y_offset), (img_width - padding, y_offset)], fill=(240, 240, 240), width=1)
+
+            # 将图片转换为 base64
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            img_byte_arr.seek(0)
+            import base64
+            return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+
+        except Exception as e:
+            logger.error(f"创建搜索结果图片时发生错误: {str(e)}")
+            return None
 
     def handle_search_result(self, data: dict) -> dict:
         """处理搜索结果"""
