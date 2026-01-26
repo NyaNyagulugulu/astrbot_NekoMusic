@@ -69,9 +69,9 @@ class NekoMusicPlugin(Star):
                 album = song.get("album", song.get("al", "未知专辑"))
                 song_id = song.get("id", "")
                 
-                # 获取封面图片URL
-                cover_url = song.get("cover", song.get("pic", song.get("album_pic", "")))
-                if cover_url:
+                # 使用封面 API 获取封面图片
+                if song_id:
+                    cover_url = f"https://music.cnmsb.xin/api/music/cover/{song_id}"
                     result["cover_urls"].append(cover_url)
                 
                 reply_text += f"{idx}. {song_name} - {artist}\n"
