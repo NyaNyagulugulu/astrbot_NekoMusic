@@ -233,7 +233,8 @@ class MusicSearchDrawer:
                 y_offset += self.ITEM_HEIGHT
 
             # 绘制底部版权
-            footer_text = "Neko云音乐 - Powered by AstrBot"
+            footer_text = "Neko云音乐 - Powered by 不穿胖次の小奶猫"
+            footer_text = "music.cnmsb.xin 蜀ICP备2025177767号-1"
             footer_bbox = draw.textbbox((0, 0), footer_text, font=self.font_footer)
             footer_width = footer_bbox[2] - footer_bbox[0]
             footer_x = (self.IMG_WIDTH - footer_width) // 2
