@@ -35,26 +35,21 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 构建转发消息列表
-                        forward_messages = []
+                        # 构建消息链
+                        message_chain = []
                         
-                        # 添加标题消息
-                        forward_messages.append({
-                            "content": f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲"
-                        })
+                        # 添加标题
+                        message_chain.append(Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n\n"))
                         
                         # 添加每首歌的封面和信息
-                        for idx, song_info in enumerate(result_data.get("songs", []), 1):
-                            # 构建歌曲消息
-                            song_message = f"{idx}. {song_info['text']}"
+                        for song_info in result_data.get("songs", []):
+                            # 添加封面图片
                             if song_info.get("cover_url"):
-                                song_message = f"[CQ:image,file={song_info['cover_url']}]\n{song_message}"
-                            forward_messages.append({
-                                "content": song_message
-                            })
+                                message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
+                            # 添加歌曲信息
+                            message_chain.append(Comp.Plain(song_info["text"] + "\n"))
                         
-                        # 发送合并转发消息
-                        yield event.forward_result(forward_messages)
+                        yield event.chain_result(message_chain)
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
