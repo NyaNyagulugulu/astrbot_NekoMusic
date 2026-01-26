@@ -38,12 +38,20 @@ class NekoMusicPlugin(Star):
                         # 构建消息链
                         message_chain = []
                         
-                        # 添加封面图片
-                        for cover_url in result_data.get("cover_urls", []):
-                            message_chain.append(Comp.Image.fromURL(url=cover_url))
+                        # 添加标题
+                        message_chain.append(Comp.Plain("🎵 搜索结果:\n\n"))
                         
-                        # 添加文本
-                        message_chain.append(Comp.Plain(result_data["text"]))
+                        # 添加每首歌的封面和信息
+                        for song_info in result_data.get("songs", []):
+                            # 添加封面图片
+                            if song_info.get("cover_url"):
+                                message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
+                            # 添加歌曲信息
+                            message_chain.append(Comp.Plain(song_info["text"]))
+                        
+                        # 添加总数
+                        if result_data.get("total"):
+                            message_chain.append(Comp.Plain(f"\n共找到 {result_data['total']} 首歌曲"))
                         
                         yield event.chain_result(message_chain)
                     else:
@@ -56,17 +64,16 @@ class NekoMusicPlugin(Star):
 
     def handle_search_result(self, data: dict) -> dict:
         """处理搜索结果"""
-        result = {"text": "", "cover_urls": []}
+        result = {"songs": [], "total": 0}
         
         if data.get("success") and data.get("results"):
             songs = data["results"]
             
             if not songs:
-                result["text"] = "未找到相关歌曲"
+                result["songs"] = [{"cover_url": None, "text": "未找到相关歌曲"}]
                 return result
             
-            # 构建回复消息
-            reply_text = f"🎵 搜索结果:\n\n"
+            result["total"] = len(songs)
             
             # 显示前 5 首歌曲
             for idx, song in enumerate(songs[:5], 1):
@@ -76,19 +83,22 @@ class NekoMusicPlugin(Star):
                 song_id = song.get("id", "")
                 
                 # 使用封面 API 获取封面图片
+                cover_url = None
                 if song_id:
                     cover_url = f"https://music.cnmsb.xin/api/music/cover/{song_id}"
-                    result["cover_urls"].append(cover_url)
                 
-                reply_text += f"{idx}. {song_name} - {artist}\n"
-                reply_text += f"   专辑: {album}\n"
+                # 构建歌曲信息文本
+                song_text = f"{idx}. {song_name} - {artist}\n"
+                song_text += f"   专辑: {album}\n"
                 if song_id:
-                    reply_text += f"   ID: {song_id}\n"
-                reply_text += "\n"
-            
-            reply_text += f"共找到 {len(songs)} 首歌曲"
-            result["text"] = reply_text
+                    song_text += f"   ID: {song_id}\n"
+                song_text += "\n"
+                
+                result["songs"].append({
+                    "cover_url": cover_url,
+                    "text": song_text
+                })
         else:
-            result["text"] = f"搜索失败: {data.get('message', '未知错误')}"
+            result["songs"] = [{"cover_url": None, "text": f"搜索失败: {data.get('message', '未知错误')}"}]
         
         return result
