@@ -1,7 +1,7 @@
 name: astrbot_nekomusic
 display_name: Neko云音乐点歌插件
-desc: 基于 Neko云音乐 API 的群内点歌插件,支持搜索音乐并显示封面
-version: v1.2.0
+desc: 基于 Neko云音乐 API 的群内点歌插件,支持搜索音乐并生成精美图片展示
+version: v1.3.0
 author: 不穿胖次の小奶猫（NyaNyagulugulu）
 repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
 homepage: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
