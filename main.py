@@ -170,7 +170,7 @@ class MusicSearchDrawer:
             draw.rectangle([(0, 0), (self.IMG_WIDTH, 8)], fill=self.COLOR_ACCENT)
 
             # 绘制标题
-            title_text = "🎵 音乐搜索"
+            title_text = "音乐搜索"
             draw.text((self.PADDING, 25), title_text, font=self.font_title, fill=self.COLOR_HEADER)
 
             # 绘制关键词和结果数
@@ -424,7 +424,7 @@ class Main(Star):
 
         # 先返回播放链接
         yield event.chain_result([
-            Comp.Plain(f"🎵 正在播放: {song_name}\n🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
+            Comp.Plain(f"🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
         ])
 
         # 下载音频并发送语音
