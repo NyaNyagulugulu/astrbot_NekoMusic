@@ -15,6 +15,7 @@ class MusicSearchDrawer:
 
     # 常量定义
     FONT_PATHS = [
+        "YeZiGongChangGuaiJiaoHei-2.ttf",  # 自定义字体（优先）
         "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
         "C:/Windows/Fonts/msyhbd.ttc",    # 微软雅黑粗体
         "C:/Windows/Fonts/simhei.ttf",    # 黑体
