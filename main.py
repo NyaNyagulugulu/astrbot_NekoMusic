@@ -262,11 +262,13 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.2.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.4.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.drawer = MusicSearchDrawer()
+        # 存储每个会话的搜索结果，格式: {session_id: {"songs": [...], "timestamp": ...}}
+        self.search_results = {}
 
     @filter.regex(r"^点歌.*")
     async def search_music(self, event: AstrMessageEvent):
@@ -288,12 +290,18 @@ class Main(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
 
+                        # 保存搜索结果到会话
+                        session_id = event.session_id
+                        self.search_results[session_id] = {
+                            "songs": data.get("results", [])
+                        }
+
                         # 使用 drawer 绘制图片
                         image_bytes = await self.drawer.draw_search_result(keyword, result_data, session)
 
                         if image_bytes:
                             yield event.chain_result([
-                                Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲"),
+                                Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n💡 回复序号即可播放,例如: 1"),
                                 Comp.Image.fromBytes(image_bytes)
                             ])
                         else:
@@ -342,5 +350,50 @@ class Main(Star):
                 })
         else:
             result["songs"] = [{"cover_url": None, "text": f"搜索失败: {data.get('message', '未知错误')}"}]
-        
+
         return result
+
+    @filter.regex(r"^\d+$")
+    async def play_music(self, event: AstrMessageEvent):
+        """播放音乐（通过序号）"""
+        msg_text = event.message_str.strip()
+
+        # 检查是否是纯数字
+        if not msg_text.isdigit():
+            return
+
+        index = int(msg_text) - 1  # 转换为 0-based 索引
+
+        # 获取会话的搜索结果
+        session_id = event.session_id
+        if session_id not in self.search_results:
+            # 如果没有搜索结果，不处理（让其他过滤器处理）
+            return
+
+        search_data = self.search_results[session_id]
+        songs = search_data["songs"]
+
+        # 检查索引是否有效
+        if index < 0 or index >= len(songs):
+            yield event.plain_result(f"序号无效，请输入 1-{len(songs)} 之间的数字")
+            return
+
+        # 获取歌曲信息
+        song = songs[index]
+        song_name = song.get("name", song.get("title", "未知歌曲"))
+        song_id = song.get("id", "")
+
+        if not song_id:
+            yield event.plain_result("该歌曲没有有效的 ID，无法播放")
+            return
+
+        # 生成播放链接
+        play_url = f"https://music.cnmsb.xin/detail/{song_id}"
+
+        # 返回播放链接
+        yield event.chain_result([
+            Comp.Plain("🎶 Neko云音乐。听见好音乐\n"),
+            Comp.Plain(f"🔗 {play_url}\n"),
+            Comp.Plain("音频正在发送中，请稍候..."),
+
+        ])
