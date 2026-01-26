@@ -332,6 +332,9 @@ class Main(Star):
                 album = song.get("album", song.get("al", "未知专辑"))
                 song_id = song.get("id", "")
 
+                # 打印完整的歌曲数据结构用于调试
+                logger.info(f"歌曲 {idx} 数据: {song}")
+
                 # 使用封面 API 获取封面图片
                 cover_url = None
                 if song_id:
@@ -389,11 +392,33 @@ class Main(Star):
 
         # 生成播放链接
         play_url = f"https://music.cnmsb.xin/detail/{song_id}"
+        audio_url = f"https://music.cnmsb.xin/api/music/file/{song_id}"
 
-        # 返回播放链接
+        # 先返回播放链接
         yield event.chain_result([
+            Comp.Plain(f"🎵 正在播放: {song_name}\n"),
             Comp.Plain("🎶 Neko云音乐。听见好音乐\n"),
             Comp.Plain(f"🔗 {play_url}\n"),
-            Comp.Plain("音频正在发送中，请稍候..."),
-
         ])
+
+        # 下载音频并发送语音
+        try:
+            async with aiohttp.ClientSession() as session:
+                logger.info(f"尝试下载音频: {audio_url}")
+                async with session.get(audio_url, timeout=30) as audio_response:
+                    logger.info(f"音频响应状态码: {audio_response.status}")
+                    if audio_response.status == 200:
+                        audio_data = await audio_response.read()
+                        logger.info(f"音频数据大小: {len(audio_data)} bytes")
+                        # 发送语音（使用 Record 组件）
+                        yield event.chain_result([
+                            Comp.Record.fromBytes(audio_data)
+                        ])
+                    else:
+                        response_text = await audio_response.text()
+                        logger.error(f"下载音频失败,状态码: {audio_response.status}, 响应: {response_text}")
+                        yield event.plain_result(f"❌ 音频下载失败(状态码: {audio_response.status})")
+        except Exception as e:
+            logger.error(f"下载或发送音频时发生错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
