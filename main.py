@@ -10,7 +10,7 @@ class NekoMusicPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
 
-    @filter.command("点歌")
+    @filter.command("点歌", block=False)
     async def search_music(self, event: AstrMessageEvent):
         """搜索音乐"""
         # 获取消息文本
