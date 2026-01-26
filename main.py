@@ -341,11 +341,11 @@ class Main(Star):
                     cover_url = f"https://music.cnmsb.xin/api/music/cover/{song_id}"
 
                 # 构建歌曲信息文本
-                song_text = f"🎶 {song_name}\n"
-                song_text += f"🎤 歌手: {artist}\n"
-                song_text += f"💿 专辑: {album}\n"
+                song_text = f"{song_name}\n"
+                song_text += f"歌手: {artist}\n"
+                song_text += f"专辑: {album}\n"
                 if song_id:
-                    song_text += f"🆔 ID: {song_id}"
+                    song_text += f"平台音乐ID: {song_id}"
 
                 result["songs"].append({
                     "cover_url": cover_url,
@@ -364,12 +364,6 @@ class Main(Star):
         # 检查是否是纯数字
         if not msg_text.isdigit():
             return
-
-        # 调试：输出消息链结构
-        # logger.info(f"调试 - 消息内容: {event.message_str}")
-        # if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
-        #     components = event.message_obj.message
-        #     logger.info(f"调试 - 消息链 components: {components}")
 
         # 检查是否引用了消息 - 从消息链中查找 Reply 组件
         reply_msg = None
@@ -390,10 +384,6 @@ class Main(Star):
         if hasattr(reply_msg, 'sender_id'):
             reply_sender_id = reply_msg.sender_id
             bot_id = event.get_self_id()
-
-            # 调试：输出类型和值
-            # logger.info(f"调试 - reply_sender_id 类型: {type(reply_sender_id)}, 值: {reply_sender_id}")
-            # logger.info(f"调试 - bot_id 类型: {type(bot_id)}, 值: {bot_id}")
 
             # 类型转换后比较（处理字符串和整数不一致的情况）
             if str(reply_sender_id) != str(bot_id):
