@@ -365,6 +365,44 @@ class Main(Star):
         if not msg_text.isdigit():
             return
 
+        # 调试：输出消息链结构
+        # logger.info(f"调试 - 消息内容: {event.message_str}")
+        # if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
+        #     components = event.message_obj.message
+        #     logger.info(f"调试 - 消息链 components: {components}")
+
+        # 检查是否引用了消息 - 从消息链中查找 Reply 组件
+        reply_msg = None
+        if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
+            components = event.message_obj.message
+            # 遍历消息链查找 Reply 组件
+            for comp in components:
+                if hasattr(comp, 'type') and comp.type == 'Reply':
+                    reply_msg = comp
+                    logger.info(f"找到 Reply 组件: {reply_msg}")
+                    break
+
+        if not reply_msg:
+            logger.info("没有引用消息，跳过播放")
+            return
+
+        # 检查引用的消息发送者是否是机器人自己
+        if hasattr(reply_msg, 'sender_id'):
+            reply_sender_id = reply_msg.sender_id
+            bot_id = event.get_self_id()
+
+            # 调试：输出类型和值
+            # logger.info(f"调试 - reply_sender_id 类型: {type(reply_sender_id)}, 值: {reply_sender_id}")
+            # logger.info(f"调试 - bot_id 类型: {type(bot_id)}, 值: {bot_id}")
+
+            # 类型转换后比较（处理字符串和整数不一致的情况）
+            if str(reply_sender_id) != str(bot_id):
+                logger.info(f"引用的消息发送者: {reply_sender_id}, 机器人ID: {bot_id}，不匹配，跳过播放")
+                return
+        else:
+            logger.info("reply_msg 没有 sender_id 属性，跳过播放")
+            return
+
         index = int(msg_text) - 1  # 转换为 0-based 索引
 
         # 获取会话的搜索结果
