@@ -34,12 +34,12 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 如果有封面图片URL,发送图片
-                        if result_data.get("cover_url"):
-                            yield event.image_result(result_data["cover_url"])
-                            yield event.plain_result(result_data["text"])
-                        else:
-                            yield event.plain_result(result_data["text"])
+                        # 发送每首歌的封面图片
+                        for cover_url in result_data.get("cover_urls", []):
+                            yield event.image_result(cover_url)
+                        
+                        # 发送文本结果
+                        yield event.plain_result(result_data["text"])
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
@@ -50,7 +50,7 @@ class NekoMusicPlugin(Star):
 
     def handle_search_result(self, data: dict) -> dict:
         """处理搜索结果"""
-        result = {"text": "", "cover_url": None}
+        result = {"text": "", "cover_urls": []}
         
         if data.get("success") and data.get("results"):
             songs = data["results"]
@@ -58,12 +58,6 @@ class NekoMusicPlugin(Star):
             if not songs:
                 result["text"] = "未找到相关歌曲"
                 return result
-            
-            # 获取第一首歌的封面
-            first_song = songs[0]
-            cover_url = first_song.get("cover", first_song.get("pic", first_song.get("album_pic", "")))
-            if cover_url:
-                result["cover_url"] = cover_url
             
             # 构建回复消息
             reply_text = f"🎵 搜索结果:\n\n"
@@ -74,6 +68,11 @@ class NekoMusicPlugin(Star):
                 artist = song.get("artist", song.get("singer", song.get("ar", "未知歌手")))
                 album = song.get("album", song.get("al", "未知专辑"))
                 song_id = song.get("id", "")
+                
+                # 获取封面图片URL
+                cover_url = song.get("cover", song.get("pic", song.get("album_pic", "")))
+                if cover_url:
+                    result["cover_urls"].append(cover_url)
                 
                 reply_text += f"{idx}. {song_name} - {artist}\n"
                 reply_text += f"   专辑: {album}\n"
