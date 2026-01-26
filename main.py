@@ -6,7 +6,7 @@ from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.0.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.2.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class NekoMusicPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -35,25 +35,26 @@ class NekoMusicPlugin(Star):
                         data = await response.json()
                         result_data = self.handle_search_result(data)
                         
-                        # 构建消息链
-                        message_chain = []
+                        # 构建转发消息列表
+                        forward_messages = []
                         
-                        # 添加标题
-                        message_chain.append(Comp.Plain("🎵 搜索结果:\n\n"))
+                        # 添加标题消息
+                        forward_messages.append({
+                            "content": f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲"
+                        })
                         
                         # 添加每首歌的封面和信息
-                        for song_info in result_data.get("songs", []):
-                            # 添加封面图片
+                        for idx, song_info in enumerate(result_data.get("songs", []), 1):
+                            # 构建歌曲消息
+                            song_message = f"{idx}. {song_info['text']}"
                             if song_info.get("cover_url"):
-                                message_chain.append(Comp.Image.fromURL(url=song_info["cover_url"]))
-                            # 添加歌曲信息
-                            message_chain.append(Comp.Plain(song_info["text"]))
+                                song_message = f"[CQ:image,file={song_info['cover_url']}]\n{song_message}"
+                            forward_messages.append({
+                                "content": song_message
+                            })
                         
-                        # 添加总数
-                        if result_data.get("total"):
-                            message_chain.append(Comp.Plain(f"\n共找到 {result_data['total']} 首歌曲"))
-                        
-                        yield event.chain_result(message_chain)
+                        # 发送合并转发消息
+                        yield event.forward_result(forward_messages)
                     else:
                         yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
         except asyncio.TimeoutError:
@@ -88,11 +89,11 @@ class NekoMusicPlugin(Star):
                     cover_url = f"https://music.cnmsb.xin/api/music/cover/{song_id}"
                 
                 # 构建歌曲信息文本
-                song_text = f"{idx}. {song_name} - {artist}\n"
-                song_text += f"   专辑: {album}\n"
+                song_text = f"🎶 {song_name}\n"
+                song_text += f"🎤 歌手: {artist}\n"
+                song_text += f"💿 专辑: {album}\n"
                 if song_id:
-                    song_text += f"   ID: {song_id}\n"
-                song_text += "\n"
+                    song_text += f"🆔 ID: {song_id}"
                 
                 result["songs"].append({
                     "cover_url": cover_url,
