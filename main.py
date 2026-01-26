@@ -1,4 +1,5 @@
 import io
+import os
 import textwrap
 from typing import Dict, List, Tuple
 
@@ -15,13 +16,8 @@ class MusicSearchDrawer:
 
     # 常量定义
     FONT_PATHS = [
-        "YeZiGongChangGuaiJiaoHei-2.ttf",  # 自定义字体（优先）
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",  # 文泉驿正黑
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",  # Droid Sans Fallback
-        "/usr/share/fonts/truetype/arphic/uming.ttc",  # 文鼎PL简中宋
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Noto Sans CJK
-        "/System/Library/Fonts/PingFang.ttc",  # macOS PingFang
+        FONT_PATH_REGULAR := os.path.join(os.path.dirname(__file__), "DouyinSansBold.otf"),
+        FONT_PATH_BOLD := FONT_PATH_REGULAR,
     ]
 
     # 颜色定义
