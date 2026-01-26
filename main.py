@@ -16,10 +16,12 @@ class MusicSearchDrawer:
     # 常量定义
     FONT_PATHS = [
         "YeZiGongChangGuaiJiaoHei-2.ttf",  # 自定义字体（优先）
-        "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
-        "C:/Windows/Fonts/msyhbd.ttc",    # 微软雅黑粗体
-        "C:/Windows/Fonts/simhei.ttf",    # 黑体
-        "C:/Windows/Fonts/simsun.ttc",    # 宋体
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",  # 文泉驿正黑
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",  # 文泉驿微米黑
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",  # Droid Sans Fallback
+        "/usr/share/fonts/truetype/arphic/uming.ttc",  # 文鼎PL简中宋
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Noto Sans CJK
+        "/System/Library/Fonts/PingFang.ttc",  # macOS PingFang
     ]
 
     # 颜色定义
