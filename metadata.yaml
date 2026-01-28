@@ -1,7 +1,7 @@
 name: astrbot_nekomusic
 display_name: Neko云音乐点歌插件
-desc: 基于 Neko云音乐 API 的群内点歌插件,支持搜索音乐、生成精美图片、一键播放并自动发送语音
-version: v1.6.0
+desc: 基于 Neko云音乐 API 的群内点歌插件,支持搜索音乐、生成精美图片、一键播放并自动发送语音。现已支持 Telegram 平台。
+version: v1.7.0
 author: 不穿胖次の小奶猫（NyaNyagulugulu）
 repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
 homepage: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
@@ -12,4 +12,6 @@ tags:
   - 搜索
   - 播放
   - 语音
+  - Telegram
+  - 多平台
 license: MIT

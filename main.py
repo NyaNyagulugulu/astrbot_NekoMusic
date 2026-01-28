@@ -33,10 +33,12 @@ class MusicSearchDrawer:
     COLOR_FOOTER = (100, 100, 100)
 
     # 布局尺寸
-    IMG_WIDTH = 800
-    PADDING = 25
-    HEADER_HEIGHT = 100
-    ITEM_HEIGHT = 120
+    # Telegram 图片限制: 宽度最大 1280px, 高度最大 2560px, 大小最大 10MB
+    # 使用较小的宽度以确保兼容性和快速加载
+    IMG_WIDTH = 700  # 从 800 调整为 700,更适合移动端和 Telegram
+    PADDING = 20     # 从 25 调整为 20
+    HEADER_HEIGHT = 90  # 从 100 调整为 90
+    ITEM_HEIGHT = 110   # 从 120 调整为 110
     FOOTER_HEIGHT = 60
 
     def __init__(self):
@@ -262,7 +264,7 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.5.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.7.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -300,8 +302,17 @@ class Main(Star):
                         image_bytes = await self.drawer.draw_search_result(keyword, result_data, session)
 
                         if image_bytes:
+                            # 获取当前平台
+                            platform = self._get_platform(event)
+                            
+                            # 构建提示文本
+                            if platform == 'telegram':
+                                hint_text = f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n💡 点击回复按钮并输入序号即可播放"
+                            else:
+                                hint_text = f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n💡 回复序号即可播放,例如: 1"
+                            
                             yield event.chain_result([
-                                Comp.Plain(f"🎵 搜索结果: {keyword}\n共找到 {result_data.get('total', 0)} 首歌曲\n💡 回复序号即可播放,例如: 1"),
+                                Comp.Plain(hint_text),
                                 Comp.Image.fromBytes(image_bytes)
                             ])
                         else:
@@ -356,6 +367,29 @@ class Main(Star):
 
         return result
 
+    def _get_platform(self, event: AstrMessageEvent) -> str:
+        """获取当前平台类型"""
+        # 尝试从事件中获取平台信息
+        if hasattr(event, 'platform'):
+            platform = event.platform
+            # 处理 PlatformMetadata 对象
+            if hasattr(platform, 'name'):
+                return platform.name.lower()
+            elif isinstance(platform, str):
+                return platform.lower()
+        
+        # 尝试从 message_obj 中获取
+        if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'platform'):
+            platform = event.message_obj.platform
+            # 处理 PlatformMetadata 对象
+            if hasattr(platform, 'name'):
+                return platform.name.lower()
+            elif isinstance(platform, str):
+                return platform.lower()
+        
+        # 默认返回 qq
+        return 'qq'
+
     @filter.regex(r"^\d+$")
     async def play_music(self, event: AstrMessageEvent):
         """播放音乐（通过序号）"""
@@ -364,6 +398,9 @@ class Main(Star):
         # 检查是否是纯数字
         if not msg_text.isdigit():
             return
+
+        platform = self._get_platform(event)
+        logger.info(f"当前平台: {platform}")
 
         # 检查是否引用了消息 - 从消息链中查找 Reply 组件
         reply_msg = None
@@ -381,28 +418,61 @@ class Main(Star):
             return
 
         # 检查引用的消息发送者是否是机器人自己
+        # Telegram 平台: sender_id 是数字, bot_id 可能是字符串名称
+        # QQ 平台: 两者都是数字字符串
         if hasattr(reply_msg, 'sender_id'):
             reply_sender_id = reply_msg.sender_id
             bot_id = event.get_self_id()
+            platform = self._get_platform(event)
 
-            # 类型转换后比较（处理字符串和整数不一致的情况）
-            if str(reply_sender_id) != str(bot_id):
-                logger.info(f"引用的消息发送者: {reply_sender_id}, 机器人ID: {bot_id}，不匹配，跳过播放")
-                return
+            # Telegram 特殊处理: 检查 Reply 组件的 sender_nickname 是否与 bot_id 匹配
+            if platform == 'telegram':
+                # 在 Telegram 上,bot_id 可能是机器人名称(如 'nekoMcServer_bot')
+                # 检查 Reply 组件是否有 sender_nickname 属性
+                if hasattr(reply_msg, 'sender_nickname'):
+                    reply_sender_name = reply_msg.sender_nickname
+                    if str(reply_sender_name) != str(bot_id):
+                        logger.info(f"Telegram: 引用消息发送者昵称: {reply_sender_name}, 机器人ID: {bot_id}，不匹配，跳过播放")
+                        return
+                else:
+                    # 如果没有 sender_nickname,尝试其他方式验证
+                    logger.info(f"Telegram: Reply 组件缺少 sender_nickname，跳过验证")
+            else:
+                # QQ 平台或其他平台: 直接比较 ID
+                if str(reply_sender_id) != str(bot_id):
+                    logger.info(f"引用的消息发送者: {reply_sender_id}, 机器人ID: {bot_id}，不匹配，跳过播放")
+                    return
         else:
             logger.info("reply_msg 没有 sender_id 属性，跳过播放")
             return
 
         index = int(msg_text) - 1  # 转换为 0-based 索引
+        logger.info(f"用户输入序号: {msg_text}, 转换后索引: {index}")
 
         # 获取会话的搜索结果
         session_id = event.session_id
-        if session_id not in self.search_results:
+        logger.info(f"会话ID: {session_id}")
+        logger.info(f"已保存的搜索结果会话: {list(self.search_results.keys())}")
+        
+        # 处理 Telegram 的会话 ID (可能包含消息 ID, 如: -1001934802217#27946)
+        # 提取群组/聊天 ID 部分（# 之前的部分）
+        match_session_id = session_id.split('#')[0] if '#' in session_id else session_id
+        logger.info(f"匹配使用的会话ID: {match_session_id}")
+        
+        # 检查是否有匹配的搜索结果
+        if match_session_id in self.search_results:
+            search_data = self.search_results[match_session_id]
+            songs = search_data["songs"]
+            logger.info(f"找到 {len(songs)} 首歌曲")
+        elif session_id in self.search_results:
+            # 尝试直接匹配（兼容其他平台）
+            search_data = self.search_results[session_id]
+            songs = search_data["songs"]
+            logger.info(f"直接匹配找到 {len(songs)} 首歌曲")
+        else:
             # 如果没有搜索结果，不处理（让其他过滤器处理）
+            logger.info(f"会话 {session_id} 或 {match_session_id} 没有搜索结果，跳过播放")
             return
-
-        search_data = self.search_results[session_id]
-        songs = search_data["songs"]
 
         # 检查索引是否有效
         if index < 0 or index >= len(songs):
@@ -410,6 +480,7 @@ class Main(Star):
             return
 
         # 获取歌曲信息
+        logger.info(f"准备播放第 {index + 1} 首歌曲")
         song = songs[index]
         song_name = song.get("name", song.get("title", "未知歌曲"))
         song_id = song.get("id", "")
@@ -437,13 +508,19 @@ class Main(Star):
                         audio_data = await audio_response.read()
                         logger.info(f"音频数据大小: {len(audio_data)} bytes")
 
+                        # 根据平台选择音频格式
+                        # Telegram 支持 MP3, OGG, M4A 等格式
+                        # QQ 主要支持 SILK/AMR 格式，但也支持发送音频文件
+                        audio_format = '.mp3' if platform == 'telegram' else '.mp3'
+
                         # 保存为临时文件
                         import tempfile
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as temp_file:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=audio_format) as temp_file:
                             temp_file.write(audio_data)
                             temp_path = temp_file.name
 
                         # 发送语音（使用 Record 组件，传入文件路径）
+                        # Record 组件会自动根据平台适配格式
                         yield event.chain_result([
                             Comp.Record(file=temp_path)
                         ])
