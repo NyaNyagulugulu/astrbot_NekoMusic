@@ -502,11 +502,18 @@ class Main(Star):
         try:
             async with aiohttp.ClientSession() as session:
                 logger.info(f"尝试下载音频: {audio_url}")
-                async with session.get(audio_url, timeout=30) as audio_response:
+                async with session.get(audio_url, timeout=60) as audio_response:
                     logger.info(f"音频响应状态码: {audio_response.status}")
                     if audio_response.status == 200:
                         audio_data = await audio_response.read()
-                        logger.info(f"音频数据大小: {len(audio_data)} bytes")
+                        audio_size_mb = len(audio_data) / (1024 * 1024)
+                        logger.info(f"音频数据大小: {len(audio_data)} bytes ({audio_size_mb:.2f} MB)")
+
+                        # Telegram 限制: 语音文件最大 50MB, 超过建议使用音频文件
+                        if platform == 'telegram' and audio_size_mb > 50:
+                            logger.warning(f"音频文件过大 ({audio_size_mb:.2f}MB), 超过 Telegram 语音限制 50MB")
+                            yield event.plain_result(f"⚠️ 音频文件较大 ({audio_size_mb:.2f}MB)，超过 Telegram 语音限制\n请直接点击播放链接收听: {play_url}")
+                            return
 
                         # 根据平台选择音频格式
                         # Telegram 支持 MP3, OGG, M4A 等格式
@@ -518,24 +525,37 @@ class Main(Star):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=audio_format) as temp_file:
                             temp_file.write(audio_data)
                             temp_path = temp_file.name
+                        logger.info(f"音频已保存到临时文件: {temp_path}")
 
                         # 发送语音（使用 Record 组件，传入文件路径）
                         # Record 组件会自动根据平台适配格式
-                        yield event.chain_result([
-                            Comp.Record(file=temp_path)
-                        ])
+                        logger.info(f"开始发送语音到 {platform} 平台")
+                        try:
+                            yield event.chain_result([
+                                Comp.Record(file=temp_path)
+                            ])
+                            logger.info("语音发送成功")
+                        except Exception as send_error:
+                            logger.error(f"发送语音失败: {str(send_error)}")
+                            # 如果发送失败，提供备用方案
+                            yield event.plain_result(f"⚠️ 语音发送失败，请直接点击播放链接收听: {play_url}")
 
                         # 清理临时文件
                         import os
                         try:
                             os.unlink(temp_path)
-                        except:
-                            pass
+                            logger.info(f"已清理临时文件: {temp_path}")
+                        except Exception as cleanup_error:
+                            logger.warning(f"清理临时文件失败: {str(cleanup_error)}")
                     else:
                         response_text = await audio_response.text()
                         logger.error(f"下载音频失败,状态码: {audio_response.status}, 响应: {response_text}")
                         yield event.plain_result(f"❌ 音频下载失败(状态码: {audio_response.status})")
+        except asyncio.TimeoutError:
+            logger.error("下载音频超时")
+            yield event.plain_result(f"❌ 下载音频超时，请直接点击播放链接收听: {play_url}")
         except Exception as e:
             logger.error(f"下载或发送音频时发生错误: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            yield event.plain_result(f"❌ 发送音乐失败: {str(e)}\n请直接点击播放链接收听: {play_url}")
