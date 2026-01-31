@@ -1,6 +1,6 @@
 name: astrbot_plugin_NekoMusic
 display_name: Neko云音乐点歌插件
-desc: 一个接入了Neko云音乐的点歌插件。
+desc: 一个接入了Neko云音乐的点歌插件
 version: v1.7.0
 author: Nyanyagulugulu(不穿胖次の小奶猫)
 repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
