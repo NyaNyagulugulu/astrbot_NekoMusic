@@ -1,5 +1,30 @@
 # 更新日志
 
+## [1.9.2] - 2026-07-18
+
+### 修复
+- 🐛 修复 `_conf_schema.json` 缺少 `config_items` 包裹导致 WebUI 配置面板不渲染
+- 🐛 修复 `metadata.yaml` 中 `license: MIT` 与 `LICENSE` 文件（AGPL-3.0）不一致
+- 🐛 修复 `metadata.yaml` 中 `version: v1.9.1` 不符合 PEP 440 规范（移除 `v` 前缀）
+- 🐛 修复 `search_results` 字典永不清理导致的内存泄漏，新增 30 分钟 TTL 自动清理
+- 🐛 修复 `_get_platform()` 未知平台默认返回 `"qq"` 改为 `"unknown"`
+
+### 优化
+- ⚡ **流式管道转码**：下载 FLAC 与 ffmpeg 转码并行执行，不再先将 50MB 无损文件写入磁盘
+  - 内存峰值从 50MB 降至 64KB（chunk 流式下载）
+  - 磁盘峰值从 50MB+4MB 降至仅 4MB（只存压缩后的 MP3）
+- 💾 **本地音频缓存**：下载转码后的 MP3 缓存到系统临时目录，同歌二次点播直接发送
+  - 启动时自动清理超过 `cache_expire_hours`（默认 24 小时）的过期缓存
+- 🎛️ **新增配置项**：`audio_bitrate`（码率）、`cache_expire_hours`（缓存过期）、`max_download_size_mb`（下载上限）
+  - 超过下载上限的音频直接给播放链接，不下载
+- 🔧 **临时文件清理增强**：延迟从 1 秒增至 5 秒，防止大文件发送时被提前删除
+- 🧹 **代码整理**：所有 `import` 语句移至文件顶部，移除函数内重复 import
+
+### 文档
+- 📝 更新 README：修正插件安装路径 (`data/plugins` → `data/addons/plugins`)
+- 📝 更新 README：补充配置面板说明、ffmpeg 系统依赖说明
+- 📝 更新 README：修正字体文件名、许可证声明
+
 ## [1.9.1] - 2026-05-02
 
 ### 修复
