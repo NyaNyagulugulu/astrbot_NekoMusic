@@ -1,13 +1,13 @@
 name: astrbot_plugin_NekoMusic
 display_name: Neko云音乐点歌插件
 desc: 一个接入了Neko云音乐的点歌插件
-version: v1.9.1
+version: 1.9.2
 author: Nyanyagulugulu(不穿胖次の小奶猫)
 repo: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
 homepage: https://github.com/NyaNyagulugulu/astrbot_NekoMusic
 support_platforms: 
  - aiocqhttp
- - telegram 
+ - telegram
  - discord
 astrbot_version: ">=4.10.6,<5"
 tags:
@@ -19,4 +19,4 @@ tags:
   - 语音
   - Telegram
   - 多平台
-license: MIT
+license: AGPL-3.0

@@ -10,5 +10,41 @@
         "type": "int",
         "default": 65535,
         "hint": "本机服务器的端口号"
+    },
+    "audio_bitrate": {
+        "description": "音频码率(kbps)",
+        "type": "int",
+        "default": 96,
+        "hint": "压缩音频的目标码率，越低文件越小。推荐 64-128"
+    },
+    "cache_expire_hours": {
+        "description": "缓存过期时间(小时)",
+        "type": "int",
+        "default": 24,
+        "hint": "本地音频缓存过期时间，超时自动清理"
+    },
+    "auto_play_first": {
+        "description": "自动播放第一首",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后搜索结果直接播放第一首歌，无需手动选序号"
+    },
+    "show_auto_play_hint": {
+        "description": "显示自动播放提示",
+        "type": "bool",
+        "default": true,
+        "hint": "\"唯一命中，自动播放\" 等提示文本"
+    },
+    "show_play_link": {
+        "description": "显示播放链接",
+        "type": "bool",
+        "default": true,
+        "hint": "\"正在发送音乐语音，请稍后\" 及在线播放链接"
+    },
+    "show_transcode_hint": {
+        "description": "显示转码提示",
+        "type": "bool",
+        "default": true,
+        "hint": "\"正在下载并转码音频，请稍候\" 提示"
     }
 }

@@ -2,6 +2,11 @@ import asyncio
 import io
 import json
 import os
+import re
+import shutil
+import tempfile
+import time
+import traceback
 import textwrap
 from typing import Dict, List, Tuple
 
@@ -11,7 +16,6 @@ from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-import shutil
 
 
 class MusicSearchDrawer:
@@ -102,7 +106,6 @@ class MusicSearchDrawer:
 
                 except Exception as e:
                     logger.warning(f"加载字体 {font_path} 失败: {str(e)}")
-                    import traceback
                     logger.warning(traceback.format_exc())
                     continue
 
@@ -115,7 +118,6 @@ class MusicSearchDrawer:
                 self.font_footer = ImageFont.load_default()
         except Exception as e:
             logger.error(f"字体加载过程发生错误: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             self.font_title = ImageFont.load_default()
             self.font_subtitle = ImageFont.load_default()
@@ -351,7 +353,6 @@ class MusicSearchDrawer:
 
         except Exception as e:
             logger.error(f"绘制搜索结果图片失败: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             return None
 
@@ -361,9 +362,11 @@ class Main(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.drawer = MusicSearchDrawer()
-        # 存储每个消息的搜索结果，格式: {message_id: {"songs": [...], "timestamp": ...}}
+        # 存储每个消息的搜索结果，格式: {message_id: {"songs": [...], "platform": ..., "ts": ...}}
         # 使用消息ID而不是session_id，这样同一会话中多次搜索不会互相覆盖
         self.search_results = {}
+        # 搜索结果 TTL（秒），超时自动清理
+        self.SEARCH_TTL = 1800  # 30 分钟
 
         # 从配置文件 schema 读取默认值
         schema_path = os.path.join(os.path.dirname(__file__), "_conf_schema.json")
@@ -380,10 +383,22 @@ class Main(Star):
         self.config = config or {}
         try:
             self.use_local_server = self.config.get("use_local_server", schema_defaults.get("use_local_server", False))
-            self.local_server_port = self.config.get("local_server_port", schema_defaults.get("local_server_port", 3000))
+            self.local_server_port = self.config.get("local_server_port", schema_defaults.get("local_server_port", 65535))
+            self.audio_bitrate = int(self.config.get("audio_bitrate", schema_defaults.get("audio_bitrate", 96)))
+            self.cache_expire_hours = int(self.config.get("cache_expire_hours", schema_defaults.get("cache_expire_hours", 24)))
+            self.auto_play_first = self.config.get("auto_play_first", schema_defaults.get("auto_play_first", False))
+            self.show_auto_play_hint = self.config.get("show_auto_play_hint", schema_defaults.get("show_auto_play_hint", True))
+            self.show_play_link = self.config.get("show_play_link", schema_defaults.get("show_play_link", True))
+            self.show_transcode_hint = self.config.get("show_transcode_hint", schema_defaults.get("show_transcode_hint", True))
         except Exception:
             self.use_local_server = schema_defaults.get("use_local_server", False)
-            self.local_server_port = schema_defaults.get("local_server_port", 3000)
+            self.local_server_port = schema_defaults.get("local_server_port", 65535)
+            self.audio_bitrate = int(schema_defaults.get("audio_bitrate", 96))
+            self.cache_expire_hours = int(schema_defaults.get("cache_expire_hours", 24))
+            self.auto_play_first = schema_defaults.get("auto_play_first", False)
+            self.show_auto_play_hint = schema_defaults.get("show_auto_play_hint", True)
+            self.show_play_link = schema_defaults.get("show_play_link", True)
+            self.show_transcode_hint = schema_defaults.get("show_transcode_hint", True)
 
         # 设置API基础URL
         if self.use_local_server:
@@ -392,6 +407,11 @@ class Main(Star):
         else:
             self.api_base_url = "https://music.cnmsb.xin"
             logger.info("使用在线服务器模式")
+
+        # 初始化本地音频缓存目录，并清理过期缓存
+        self.cache_dir = os.path.join(tempfile.gettempdir(), "nekomusic_cache")
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self._startup_cache_cleanup()
 
     @filter.regex(r"^点歌.*")
     async def search_music(self, event: AstrMessageEvent):
@@ -420,15 +440,36 @@ class Main(Star):
                         # 获取当前平台
                         platform = self._get_platform(event)
 
-                        # 保存搜索结果，使用用户消息ID作为键
+                        # 保存搜索结果前先清理过期条目
+                        self._cleanup_expired_searches()
                         results = data.get("results")
                         if results is None:
                             results = []
                         self.search_results[user_message_id] = {
                             "songs": results,
-                            "platform": platform  # 保存平台信息
+                            "platform": platform,
+                            "ts": time.time()
                         }
-                        logger.info(f"搜索结果已保存，用户消息ID: {user_message_id}, 歌曲数: {len(results)}")
+                        total_count = len(results)
+                        logger.info(f"搜索结果已保存，用户消息ID: {user_message_id}, 歌曲数: {total_count}")
+
+                        # 自动播放：单条结果 或 开启 auto_play_first 配置
+                        if results and (total_count == 1 or self.auto_play_first):
+                            song = results[0]
+                            song_name = song.get("name", song.get("title", "未知歌曲"))
+                            artist = song.get("artist", song.get("singer", "未知歌手"))
+                            reason = "唯一命中" if total_count == 1 else "auto_play_first 已开启"
+                            logger.info(f"自动播放 ({reason}): {song_name} - {artist}")
+                            if self.show_auto_play_hint:
+                                yield event.plain_result(f"🎵 {reason}，自动播放: {song_name} - {artist}")
+                            async for result in self._play_song(song, platform, event):
+                                yield result
+                            return
+
+                        # 0 条结果：简短提示，跳过图片渲染
+                        if total_count == 0:
+                            yield event.plain_result(f"🎵 未找到与 \"{keyword}\" 相关的歌曲")
+                            return
 
                         # 使用 drawer 绘制图片
                         image_bytes = await self.drawer.draw_search_result(keyword, result_data, session)
@@ -535,9 +576,9 @@ class Main(Star):
                     logger.info(f"从 message_obj.platform 字符串获取到: {result}")
                     return result
 
-        # 默认返回 qq
-        logger.info("使用默认平台: qq")
-        return 'qq'
+        # 默认返回 unknown
+        logger.info("使用默认平台: unknown")
+        return 'unknown'
 
     def _get_message_id(self, event: AstrMessageEvent) -> str:
         """获取消息ID"""
@@ -590,7 +631,6 @@ class Main(Star):
             logger.info(f"当前平台: {platform}")
         except Exception as e:
             logger.error(f"_get_platform 调用失败: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             platform = 'telegram'  # Telegram 平台默认值
 
@@ -711,7 +751,6 @@ class Main(Star):
                 if hasattr(event.message_obj.message_obj, 'referenced_message'):
                     ref_msg = event.message_obj.message_obj.referenced_message
                     if hasattr(ref_msg, 'content'):
-                        import re
                         mid_match = re.search(r'\[MID:(\d+)\]', ref_msg.content)
                         if mid_match:
                             user_message_id = mid_match.group(1)
@@ -725,7 +764,6 @@ class Main(Star):
                         if hasattr(raw_msg.reference, 'resolved') and raw_msg.reference.resolved:
                             ref_msg = raw_msg.reference.resolved
                             if hasattr(ref_msg, 'content'):
-                                import re
                                 mid_match = re.search(r'\[MID:(\d+)\]', ref_msg.content)
                                 if mid_match:
                                     user_message_id = mid_match.group(1)
@@ -743,7 +781,6 @@ class Main(Star):
 
             # 方法1: 从引用消息的文本中提取 [MID:xxx] 格式的消息ID
             if hasattr(reply_msg, 'text'):
-                import re
                 mid_match = re.search(r'\[MID:(\d+)\]', reply_msg.text)
                 if mid_match:
                     reply_message_id = mid_match.group(1)
@@ -779,9 +816,18 @@ class Main(Star):
             yield event.plain_result(f"序号无效，请输入 1-{len(songs)} 之间的数字")
             return
 
-        # 获取歌曲信息
+        # 获取歌曲信息并委托给 _play_song
         logger.info(f"准备播放第 {index + 1} 首歌曲")
         song = songs[index]
+        async for result in self._play_song(song, platform, event):
+            yield result
+        return
+
+    async def _play_song(self, song: dict, platform: str, event: AstrMessageEvent):
+        """播放单首歌曲的完整流程：链接→预检→缓存→转码→发送。
+
+        从 search_music（自动播放）和 play_music（序号播放）共享调用。
+        """
         song_name = song.get("name", song.get("title", "未知歌曲"))
         song_id = song.get("id", "")
 
@@ -795,178 +841,300 @@ class Main(Star):
 
         # 先返回播放链接
         send_type = "文件" if platform == 'discord' else "语音"
-        yield event.chain_result([
-            Comp.Plain(f"🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐{send_type}，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
-        ])
+        if self.show_play_link:
+            yield event.chain_result([
+                Comp.Plain(f"🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐{send_type}，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
+            ])
 
-        # 下载音频并发送语音
+        # 下载音频并发送语音（流式管道转码 + 本地缓存）
         try:
             async with aiohttp.ClientSession() as session:
-                logger.info(f"尝试下载音频: {audio_url}")
-                async with session.get(audio_url, timeout=60) as audio_response:
-                    logger.info(f"音频响应状态码: {audio_response.status}")
-                    if audio_response.status == 200:
-                        audio_data = await audio_response.read()
-                        audio_size_mb = len(audio_data) / (1024 * 1024)
-                        logger.info(f"音频数据大小: {len(audio_data)} bytes ({audio_size_mb:.2f} MB)")
+                # 第一步：HEAD 预检文件大小，按转码后估算判断
+                head_size_mb = await self._head_check_size(session, audio_url, song_id, song_name)
+                if head_size_mb is not None:
+                    # 安全上限：原始文件超大 (>500MB) 直接拒绝
+                    if head_size_mb > 500:
+                        yield event.plain_result(
+                            f"⚠️ 音频文件过大 ({head_size_mb:.1f}MB)，不支持下载\n"
+                            f"请直接点击播放链接收听: {play_url}"
+                        )
+                        return
 
-                        # 平台限制检查和音频压缩
-                        # Discord: 文件最大 10MB
-                        # Telegram: 语音文件最大 50MB
-                        # QQ: 语音消息通常限制在 10MB 以内
-                        if platform == 'discord':
-                            max_size_mb = 10
-                        elif platform == 'telegram':
-                            max_size_mb = 50
-                        else:
-                            max_size_mb = 10
+                    # 按目标码率估算转码后 MP3 大小（假设 FLAC 平均 ~900kbps）
+                    est_mp3_mb = head_size_mb * self.audio_bitrate / 900
+                    platform_max = self._get_platform_max_size(platform)
+                    if est_mp3_mb > platform_max:
+                        yield event.plain_result(
+                            f"⚠️ 原始文件 {head_size_mb:.1f}MB，预计转码后 ~{est_mp3_mb:.1f}MB，"
+                            f"仍超过平台限制 ({platform_max}MB)\n"
+                            f"请直接点击播放链接收听: {play_url}"
+                        )
+                        return
+                    logger.info(
+                        f"原始 {head_size_mb:.1f}MB → 预估 MP3 {est_mp3_mb:.1f}MB "
+                        f"(码率 {self.audio_bitrate}kbps, 平台限制 {platform_max}MB)"
+                    )
 
-                        # 根据平台选择音频格式
-                        # Discord: MP3 格式
-                        # Telegram: MP3 格式
-                        # QQ: MP3 格式
-                        audio_format = '.mp3'
+                # 第二步：检查本地缓存
+                cache_path = self._get_cache_path(song_id)
+                if os.path.exists(cache_path):
+                    cache_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
+                    logger.info(f"命中本地缓存: {cache_path} ({cache_size_mb:.2f}MB)")
 
-                        # 保存为临时文件
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=audio_format) as temp_file:
-                            temp_file.write(audio_data)
-                            temp_path = temp_file.name
-                        logger.info(f"音频已保存到临时文件: {temp_path}")
-
-                        # 检查文件大小，如果超过限制则压缩
-                        temp_file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
-                        logger.info(f"临时文件大小: {temp_file_size_mb:.2f} MB")
-
-                        if temp_file_size_mb > max_size_mb:
-                            logger.info(f"文件过大 ({temp_file_size_mb:.2f}MB)，开始压缩...")
-                            yield event.plain_result(f"文件较大 ({temp_file_size_mb:.2f}MB)，正在压缩中，请稍候...")
-                            
-                            # 使用 ffmpeg 压缩音频
-                            compressed_path = temp_path.replace(audio_format, f'_compressed{audio_format}')
-                            try:
-                                # 检查 ffmpeg 是否可用
-                                import shutil
-                                if not shutil.which('ffmpeg'):
-                                    logger.error("ffmpeg 未安装，无法压缩音频")
-                                    yield event.plain_result(f"音频文件过大 ({temp_file_size_mb:.2f}MB)，但 ffmpeg 未安装无法压缩\n请直接点击播放链接收听: {play_url}")
-                                    os.unlink(temp_path)
-                                    return
-
-                                # 使用 ffmpeg 压缩
-                                # 目标：降低比特率到 128kbps，采样率到 44100Hz，保留双声道
-                                compress_cmd = [
-                                    'ffmpeg', '-i', temp_path,
-                                    '-b:a', '128k',  # 音频比特率 128kbps
-                                    '-ar', '44100',  # 采样率 44100Hz
-                                    '-ac', '2',      # 双声道
-                                    '-y',            # 覆盖输出文件
-                                    compressed_path
-                                ]
-                                
-                                # Ensure asyncio is available for subprocess creation
-                                import asyncio
-                                
-                                process = await asyncio.create_subprocess_exec(
-                                    *compress_cmd,
-                                    stdout=asyncio.subprocess.PIPE,
-                                    stderr=asyncio.subprocess.PIPE
-                                )
-                                
-                                stdout, stderr = await process.communicate()
-                                
-                                if process.returncode != 0:
-                                    logger.error(f"ffmpeg 压缩失败: {stderr.decode()}")
-                                    yield event.plain_result(f"音频压缩失败，请直接点击播放链接收听: {play_url}")
-                                    os.unlink(temp_path)
-                                    return
-                                
-                                # 检查压缩后的大小
-                                compressed_size_mb = os.path.getsize(compressed_path) / (1024 * 1024)
-                                logger.info(f"压缩完成: {temp_file_size_mb:.2f}MB → {compressed_size_mb:.2f}MB")
-                                
-                                # 删除原文件，使用压缩后的文件
-                                os.unlink(temp_path)
-                                temp_path = compressed_path
-                                
-                                # 如果压缩后仍然过大
-                                if compressed_size_mb > max_size_mb:
-                                    logger.warning(f"压缩后仍然过大 ({compressed_size_mb:.2f}MB)")
-                                    yield event.plain_result(f"音频压缩后仍较大 ({compressed_size_mb:.2f}MB)，可能发送失败\n请直接点击播放链接收听: {play_url}")
-                                    # 不返回，继续尝试发送
-                                else:
-                                    #yield event.plain_result(f"压缩完成 ({compressed_size_mb:.2f}MB)，开始发送...")
-                                    logger.info(f"压缩完成 ({compressed_size_mb:.2f}MB)，开始发送...")
-                                    
-                            except Exception as compress_error:
-                                logger.error(f"压缩音频时发生错误: {str(compress_error)}")
-                                import traceback
-                                logger.error(traceback.format_exc())
-                                #yield event.plain_result(f"压缩失败，尝试发送原文件\n请直接点击播放链接收听: {play_url}")
-
-                        # 发送音频
-                        # Discord 平台使用 File 组件发送音频文件
-                        # 其他平台使用 Record 组件发送语音
-                        logger.info(f"开始发送音频到 {platform} 平台")
-
-                        # 构建文件名（歌曲名 - 歌手.扩展名）
-                        # 需要从歌曲信息中获取歌手名
-                        artist = song.get("artist", song.get("singer", "未知歌手"))
-                        # 清理文件名中的非法字符
-                        import re
-                        safe_song_name = re.sub(r'[<>:"/\\|?*]', '', song_name)
-                        safe_artist = re.sub(r'[<>:"/\\|?*]', '', artist)
-                        filename = f"{safe_song_name} - {safe_artist}{audio_format}"
-
-                        # 重命名临时文件为歌曲名
-                        new_temp_path = os.path.join(os.path.dirname(temp_path), filename)
-                        try:
-                            os.rename(temp_path, new_temp_path)
-                            logger.info(f"文件已重命名: {temp_path} -> {new_temp_path}")
-                            temp_path = new_temp_path
-                        except Exception as rename_error:
-                            logger.warning(f"重命名文件失败: {str(rename_error)}，使用原文件名")
-
-                        try:
-                            if platform == 'discord':
-                                # Discord 使用 File 组件发送音频文件
-                                # 传入文件名和文件路径
-                                yield event.chain_result([
-                                    Comp.File(name=filename, file=temp_path)
-                                ])
-                                logger.info("Discord 音频文件发送成功")
-                            else:
-                                # 其他平台使用 Record 组件发送语音
-                                yield event.chain_result([
-                                    Comp.Record(file=temp_path)
-                                ])
-                                logger.info("语音发送成功")
-                        except Exception as send_error:
-                            logger.error(f"发送失败: {str(send_error)}")
-                            # 如果发送失败，提供备用方案
-                            yield event.plain_result(f"⚠️ 发送失败，请直接点击播放链接收听: {play_url}")
-
-                        # 清理临时文件：延迟到发送完成后再删（避免 Comp.Record 读取失败）
-                        import asyncio
-                        async def safe_cleanup(path):
-                            try:
-                                # 等待 1 秒，确保 AstrBot 已读取文件
-                                await asyncio.sleep(1.0)
-                                os.unlink(path)
-                                logger.info(f"✅ 已清理临时文件: {path}")
-                            except Exception as e:
-                                logger.warning(f"⚠️ 清理临时文件失败（可忽略）: {e}")
-                        # 在后台执行，不阻塞发送
-                        asyncio.create_task(safe_cleanup(temp_path))
+                    max_size_mb = self._get_platform_max_size(platform)
+                    if cache_size_mb > max_size_mb:
+                        logger.info(f"缓存文件 ({cache_size_mb:.2f}MB) 超过平台限制 ({max_size_mb}MB)，重新压缩")
+                        temp_path = await self._recompress_file(
+                            cache_path, song_id, song_name, max_size_mb
+                        )
+                        if temp_path is None:
+                            yield event.plain_result(f"❌ 压缩失败，请直接点击播放链接收听: {play_url}")
+                            return
+                        send_path = temp_path
+                        needs_cleanup = True
                     else:
-                        response_text = await audio_response.text()
-                        logger.error(f"下载音频失败,状态码: {audio_response.status}, 响应: {response_text}")
-                        yield event.plain_result(f"❌ 音频下载失败(状态码: {audio_response.status})")
+                        send_path = cache_path
+                        needs_cleanup = False
+                else:
+                    # 第三步：缓存未命中 → 流式下载 + ffmpeg 管道转码
+                    logger.info(f"缓存未命中，开始流式下载并转码 (song_id={song_id})")
+                    if self.show_transcode_hint:
+                        yield event.plain_result("🎵 正在下载并转码音频，请稍候...")
+
+                    temp_path = await self._stream_download_and_compress(
+                        session, audio_url, song_id, song_name, platform
+                    )
+                    if temp_path is None:
+                        yield event.plain_result(f"❌ 音频处理失败，请直接点击播放链接收听: {play_url}")
+                        return
+
+                    # 处理后的文件移动到缓存目录
+                    try:
+                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                        shutil.move(temp_path, cache_path)
+                        logger.info(f"已缓存: {cache_path}")
+                        send_path = cache_path
+                        needs_cleanup = False
+                    except Exception as move_err:
+                        logger.warning(f"移动缓存失败，直接发送临时文件: {move_err}")
+                        send_path = temp_path
+                        needs_cleanup = True
+
+                # 第四步：发送音频
+                logger.info(f"开始发送音频到 {platform} 平台")
+                filename = os.path.basename(send_path)
+
+                try:
+                    if platform == 'discord':
+                        yield event.chain_result([
+                            Comp.File(name=filename, file=send_path)
+                        ])
+                        logger.info("Discord 音频文件发送成功")
+                    else:
+                        yield event.chain_result([
+                            Comp.Record(file=send_path)
+                        ])
+                        logger.info("语音发送成功")
+                except Exception as send_error:
+                    logger.error(f"发送失败: {str(send_error)}")
+                    yield event.plain_result(f"⚠️ 发送失败，请直接点击播放链接收听: {play_url}")
+
+                # 仅清理临时文件（缓存文件保留）
+                if needs_cleanup:
+                    asyncio.create_task(self._safe_cleanup(send_path, delay=5.0))
+
         except asyncio.TimeoutError:
             logger.error("下载音频超时")
             yield event.plain_result(f"❌ 下载音频超时，请直接点击播放链接收听: {play_url}")
         except Exception as e:
             logger.error(f"下载或发送音频时发生错误: {str(e)}")
-            import traceback
             logger.error(traceback.format_exc())
             yield event.plain_result(f"❌ 发送音乐失败: {str(e)}\n请直接点击播放链接收听: {play_url}")
+
+
+    # ─── 以下为内部辅助方法 ───
+
+    def _cleanup_expired_searches(self):
+        """清理过期的搜索结果（超过 SEARCH_TTL 秒未使用的条目）。"""
+        now = time.time()
+        expired = [mid for mid, v in self.search_results.items()
+                    if now - v.get("ts", 0) > self.SEARCH_TTL]
+        for mid in expired:
+            del self.search_results[mid]
+        if expired:
+            logger.info(f"清理了 {len(expired)} 条过期搜索结果")
+
+    async def _head_check_size(self, session: aiohttp.ClientSession,
+                               audio_url: str, song_id, song_name: str) -> float | None:
+        """HEAD 预检远端文件大小，返回 MB 数；失败返回 None。"""
+        try:
+            async with session.head(audio_url, timeout=15) as resp:
+                cl = resp.headers.get("Content-Length")
+                if cl:
+                    size_mb = int(cl) / (1024 * 1024)
+                    logger.info(f"HEAD 预检: {song_name} (id={song_id}) = {size_mb:.2f}MB")
+                    return size_mb
+        except Exception as e:
+            logger.warning(f"HEAD 预检失败: {e}")
+        return None
+
+    def _get_cache_path(self, song_id) -> str:
+        """获取指定 song_id 的本地缓存文件路径。"""
+        return os.path.join(self.cache_dir, f"{song_id}.mp3")
+
+    def _get_platform_max_size(self, platform: str) -> int:
+        """返回平台允许的最大音频文件大小（MB）。"""
+        if platform == 'discord':
+            return 10
+        elif platform == 'telegram':
+            return 50
+        else:
+            return 10  # QQ / aiocqhttp / unknown
+
+    async def _stream_download_and_compress(self, session: aiohttp.ClientSession,
+                                             audio_url: str, song_id,
+                                             song_name: str, platform: str) -> str | None:
+        """流式下载 FLAC 并通过 ffmpeg 管道实时转码为 MP3。
+
+        边下边压，磁盘上只存压缩后的 MP3，避免 50MB FLAC 暂存。
+        返回临时文件路径，失败返回 None。
+        """
+        # 检查 ffmpeg 是否可用
+        if not shutil.which('ffmpeg'):
+            logger.error("ffmpeg 未安装，无法转码")
+            return None
+
+        max_size_mb = self._get_platform_max_size(platform)
+        temp_path = os.path.join(tempfile.gettempdir(),
+                                 f"nekomusic_stream_{song_id}_{int(time.time())}.mp3")
+
+        try:
+            # 启动 ffmpeg：从 stdin 读取，输出 MP3 到文件
+            ffmpeg_cmd = [
+                'ffmpeg', '-i', 'pipe:0',          # stdin 接收原始音频
+                '-b:a', f'{self.audio_bitrate}k',   # 目标码率
+                '-ar', '44100', '-ac', '2',
+                '-f', 'mp3', temp_path,
+                '-y',
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *ffmpeg_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # 流式下载 → 直接喂给 ffmpeg stdin
+            async with session.get(audio_url, timeout=120) as audio_resp:
+                if audio_resp.status != 200:
+                    logger.error(f"下载音频失败,状态码: {audio_resp.status}")
+                    proc.kill()
+                    return None
+
+                downloaded = 0
+                async for chunk in audio_resp.content.iter_chunked(65536):
+                    proc.stdin.write(chunk)
+                    await proc.stdin.drain()
+                    downloaded += len(chunk)
+
+            proc.stdin.close()
+            await proc.wait()
+
+            if proc.returncode != 0:
+                stderr_text = (await proc.stderr.read()).decode('utf-8', errors='replace')
+                logger.error(f"ffmpeg 转码失败 (returncode={proc.returncode}): {stderr_text[:500]}")
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                return None
+
+            out_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+            logger.info(f"流式转码完成: {downloaded / (1024*1024):.1f}MB FLAC → {out_size_mb:.2f}MB MP3 "
+                        f"({song_name}, id={song_id})")
+
+            # 如果压缩后仍然超过平台限制，尝试降码率再压一次
+            if out_size_mb > max_size_mb:
+                logger.info(f"压缩后 ({out_size_mb:.2f}MB) 仍超平台限制 ({max_size_mb}MB)，降码率重试")
+                retry_path = await self._recompress_file(temp_path, song_id, song_name, max_size_mb)
+                if retry_path:
+                    os.unlink(temp_path)
+                    return retry_path
+                # 降码率失败，原文件继续用（让它尝试发送）
+
+            return temp_path
+
+        except Exception as e:
+            logger.error(f"流式下载转码异常: {e}")
+            logger.error(traceback.format_exc())
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+            return None
+
+    async def _recompress_file(self, src_path: str, song_id,
+                                song_name: str, max_size_mb: int) -> str | None:
+        """对已有文件用更低码率重新压缩，返回新文件路径。"""
+        if not shutil.which('ffmpeg'):
+            return None
+
+        # 逐次降码率：当前码率 → 64k → 32k
+        fallback_bitrates = [64, 32]
+        for br in fallback_bitrates:
+            if br >= self.audio_bitrate:
+                continue
+            dst_path = os.path.join(tempfile.gettempdir(),
+                                    f"nekomusic_recomp_{song_id}_{br}k.mp3")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-i', src_path,
+                    '-b:a', f'{br}k', '-ar', '22050', '-ac', '1',
+                    '-f', 'mp3', dst_path, '-y',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    new_size = os.path.getsize(dst_path) / (1024 * 1024)
+                    logger.info(f"降码率重压: {song_name} → {br}kbps = {new_size:.2f}MB")
+                    return dst_path
+                else:
+                    if os.path.exists(dst_path):
+                        os.unlink(dst_path)
+            except Exception as e:
+                logger.warning(f"降码率重压失败 ({br}k): {e}")
+                if os.path.exists(dst_path):
+                    try:
+                        os.unlink(dst_path)
+                    except Exception:
+                        pass
+        return None
+
+    async def _safe_cleanup(self, path: str, delay: float = 5.0):
+        """延迟删除临时文件，确保 AstrBot 已完成读取。"""
+        try:
+            await asyncio.sleep(delay)
+            if os.path.exists(path):
+                os.unlink(path)
+                logger.info(f"✅ 已清理临时文件: {path}")
+        except Exception as e:
+            logger.warning(f"⚠️ 清理临时文件失败（可忽略）: {e}")
+
+    def _startup_cache_cleanup(self):
+        """启动时清理超过 cache_expire_hours 小时的缓存文件。"""
+        try:
+            now = time.time()
+            cutoff = now - self.cache_expire_hours * 3600
+            cleaned = 0
+            for fname in os.listdir(self.cache_dir):
+                fpath = os.path.join(self.cache_dir, fname)
+                try:
+                    if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                        os.unlink(fpath)
+                        cleaned += 1
+                except Exception:
+                    pass
+            if cleaned:
+                logger.info(f"启动缓存清理: 删除了 {cleaned} 个过期文件 (>{self.cache_expire_hours}h)")
+        except Exception as e:
+            logger.warning(f"缓存清理出错: {e}")
