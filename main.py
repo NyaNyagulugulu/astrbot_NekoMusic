@@ -374,6 +374,9 @@ class Main(Star):
     # 留两档余量；更难时按约定退避重试，不硬解。
     MAX_POW_DIFFICULTY = 24
     MAX_POW_ATTEMPTS = 1 << (MAX_POW_DIFFICULTY + 3)
+    # 消息 ID 在 aiocqhttp / OneBot 下常是负数（int64 溢出），必须允许前导减号，
+    # 否则 [MID:-123] 匹配不到，只能退化成「用被引用消息自己的 ID」从而永远找不到结果。
+    MID_PATTERN = re.compile(r"\[MID:(-?\d+)\]")
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -613,6 +616,7 @@ class Main(Star):
                         self.search_results[user_message_id] = {
                             "songs": results,
                             "platform": platform,
+                            "session": self._session_key(event),
                             "ts": time.time()
                         }
                         total_count = len(results)
@@ -866,10 +870,10 @@ class Main(Star):
                                 logger.info(f"找到 Reply 组件: {reply_msg}")
                                 break
 
-        # 如果没有找到引用消息，跳过播放
+        # 没有引用消息时不再直接放弃：用户常常直接打「2」而不点回复，
+        # 先记为待回退，后面按「本会话唯一待点歌结果」再试一次。
         if not reply_msg and not reply_message_id:
-            logger.info("没有引用消息，跳过播放")
-            return
+            logger.info("本条消息没有引用任何消息，稍后按会话回退匹配")
 
         # 检查引用的消息发送者是否是机器人自己
         # Telegram 平台: sender_id 是数字, bot_id 可能是字符串名称
@@ -920,7 +924,7 @@ class Main(Star):
                 if hasattr(event.message_obj.message_obj, 'referenced_message'):
                     ref_msg = event.message_obj.message_obj.referenced_message
                     if hasattr(ref_msg, 'content'):
-                        mid_match = re.search(r'\[MID:(\d+)\]', ref_msg.content)
+                        mid_match = self.MID_PATTERN.search(ref_msg.content)
                         if mid_match:
                             user_message_id = mid_match.group(1)
                             logger.info(f"从引用消息内容中提取到用户消息ID: {user_message_id}")
@@ -933,7 +937,7 @@ class Main(Star):
                         if hasattr(raw_msg.reference, 'resolved') and raw_msg.reference.resolved:
                             ref_msg = raw_msg.reference.resolved
                             if hasattr(ref_msg, 'content'):
-                                mid_match = re.search(r'\[MID:(\d+)\]', ref_msg.content)
+                                mid_match = self.MID_PATTERN.search(ref_msg.content)
                                 if mid_match:
                                     user_message_id = mid_match.group(1)
                                     logger.info(f"从 raw_message.reference.resolved.content 中提取到用户消息ID: {user_message_id}")
@@ -950,7 +954,7 @@ class Main(Star):
 
             # 方法1: 从引用消息的文本中提取 [MID:xxx] 格式的消息ID
             if hasattr(reply_msg, 'text'):
-                mid_match = re.search(r'\[MID:(\d+)\]', reply_msg.text)
+                mid_match = self.MID_PATTERN.search(reply_msg.text)
                 if mid_match:
                     reply_message_id = mid_match.group(1)
                     logger.info(f"从引用消息文本中提取到消息ID: {reply_message_id}")
@@ -966,28 +970,47 @@ class Main(Star):
                 logger.info(f"从 Reply 组件 message_id 获取到消息ID: {reply_message_id}")
 
             if not reply_message_id:
-                logger.error("无法从 Reply 组件获取消息ID")
-                return
+                logger.info("没能从被引用消息里解析出消息ID，稍后尝试按会话回退匹配")
 
         logger.info(f"已保存的搜索结果消息ID: {list(self.search_results.keys())}")
 
-        # 检查是否有匹配的搜索结果
-        if reply_message_id not in self.search_results:
-            logger.info(f"消息ID {reply_message_id} 没有对应的搜索结果，跳过播放")
-            return
+        # 定位本次序号对应的搜索结果：先认被引用消息，再认「本会话唯一待点歌结果」
+        search_data = None
+        if reply_message_id and reply_message_id in self.search_results:
+            search_data = self.search_results[reply_message_id]
+        else:
+            candidates = self._session_searches(event)
+            if len(candidates) == 1:
+                reply_message_id, search_data = candidates[0]
+                logger.info(f"被引用消息未命中，按会话唯一待点歌结果回退: {reply_message_id}")
+            elif len(candidates) > 1:
+                logger.info(f"本会话有多条待点歌结果，无法确定是哪一条: {[mid for mid, _ in candidates]}")
+                yield event.plain_result("⚠️ 本会话有多条搜索结果，请回复对应那条消息再输入序号")
+                event.stop_event()
+                return
+            elif reply_msg is not None and "搜索结果" in str(getattr(reply_msg, "text", "")):
+                logger.info("引用的搜索结果已失效（超时或已消费）")
+                yield event.plain_result("⚠️ 这条搜索结果已失效，请重新点歌后再回复序号")
+                event.stop_event()
+                return
+            else:
+                logger.info("没有可用的搜索结果，交给其它处理器")
+                return
 
-        search_data = self.search_results[reply_message_id]
         songs = search_data["songs"]
         logger.info(f"找到 {len(songs)} 首歌曲")
 
         # 检查索引是否有效
         if index < 0 or index >= len(songs):
             yield event.plain_result(f"序号无效，请输入 1-{len(songs)} 之间的数字")
+            event.stop_event()
             return
 
         # 获取歌曲信息并委托给 _play_song
         logger.info(f"准备播放第 {index + 1} 首歌曲")
         song = songs[index]
+        # 这条序号已被本插件接管：终止事件传播，避免默认 LLM / 其它插件再答一遍
+        event.stop_event()
         async for result in self._play_song(song, platform, event):
             yield result
         return
@@ -1142,6 +1165,22 @@ class Main(Star):
             del self.search_results[mid]
         if expired:
             logger.info(f"清理了 {len(expired)} 条过期搜索结果")
+
+    def _session_key(self, event: AstrMessageEvent) -> str | None:
+        """当前会话的唯一标识，用于「直接打序号不点回复」时的回退匹配。"""
+        try:
+            return getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", None)
+        except Exception:
+            return None
+
+    def _session_searches(self, event: AstrMessageEvent) -> List[Tuple[str, dict]]:
+        """本会话内仍在有效期内的待点歌搜索结果，按保存顺序返回。"""
+        key = self._session_key(event)
+        if not key:
+            return []
+        self._cleanup_expired_searches()
+        return [(mid, data) for mid, data in self.search_results.items()
+                if data.get("session") == key]
 
     async def _resolve_media_url(self, session: aiohttp.ClientSession, song_id) -> str | None:
         """把 /api/music/file/{id} 的响应解析成可直接下载的媒体直链。
