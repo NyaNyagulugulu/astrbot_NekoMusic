@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -160,7 +161,7 @@ class MusicSearchDrawer:
             draw.line([(x1, y1 + radius), (x1, y2 - radius)], fill=outline, width=width)
             draw.line([(x2, y1 + radius), (x2, y2 - radius)], fill=outline, width=width)
 
-    async def draw_search_result(self, keyword: str, result_data: dict, session) -> bytes:
+    async def draw_search_result(self, keyword: str, result_data: dict, session, headers) -> bytes:
         """绘制搜索结果图片 - 二次元风格（使用 PIL）"""
         try:
             songs = result_data.get("songs", [])
@@ -267,7 +268,7 @@ class MusicSearchDrawer:
                 cover_url = song_info.get("cover_url")
                 if cover_url:
                     try:
-                        async with session.get(cover_url, timeout=8) as cover_response:
+                        async with session.get(cover_url, timeout=8, headers=headers) as cover_response:
                             if cover_response.status == 200:
                                 cover_data = await cover_response.read()
                                 cover_img = Image.open(io.BytesIO(cover_data))
@@ -330,7 +331,7 @@ class MusicSearchDrawer:
 
             # 绘制底部版权（两行）
             footer_text1 = "Neko云音乐 - Powered by 不穿胖次の小奶猫"
-            footer_text2 = "music.cnmsb.xin | 黔ICP备2026007098号"
+            footer_text2 = "music.nekocore.cn | 黔ICP备2026007098号"
 
             # 第一行
             footer_bbox1 = draw.textbbox((0, 0), footer_text1, font=self.font_footer)
@@ -357,14 +358,25 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.1", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.3", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
+    PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
+    API_CLIENT_VERSION = "1.9.3"
+    API_CLIENT_NAME = f"astrbot-nekomusic+{API_CLIENT_VERSION}"
+    API_USER_AGENT = f"AstrBot-NekoMusic/{API_CLIENT_VERSION}"
+    NONCE_BATCH_SIZE = 8
+    MAX_POW_DIFFICULTY = 20
+    MAX_POW_ATTEMPTS = 1 << (MAX_POW_DIFFICULTY + 3)
+
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.drawer = MusicSearchDrawer()
         # 存储每个消息的搜索结果，格式: {message_id: {"songs": [...], "platform": ..., "ts": ...}}
         # 使用消息ID而不是session_id，这样同一会话中多次搜索不会互相覆盖
         self.search_results = {}
+        self._nonce_pools = {"read": [], "write": []}
+        self._nonce_expiry = {"read": None, "write": None}
+        self._nonce_lock = asyncio.Lock()
         # 搜索结果 TTL（秒），超时自动清理
         self.SEARCH_TTL = 1800  # 30 分钟
 
@@ -405,13 +417,147 @@ class Main(Star):
             self.api_base_url = f"http://localhost:{self.local_server_port}"
             logger.info(f"使用本机服务器模式，端口: {self.local_server_port}")
         else:
-            self.api_base_url = "https://music.cnmsb.xin"
+            self.api_base_url = self.PUBLIC_API_BASE_URL
             logger.info("使用在线服务器模式")
 
         # 初始化本地音频缓存目录，并清理过期缓存
         self.cache_dir = os.path.join(tempfile.gettempdir(), "nekomusic_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self._startup_cache_cleanup()
+
+    def _api_headers(self) -> dict:
+        return {
+            "User-Agent": self.API_USER_AGENT,
+            "X-Neko-Client": self.API_CLIENT_NAME,
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        }
+
+    @staticmethod
+    def _api_status_message(response: aiohttp.ClientResponse) -> str:
+        message = f"HTTP {response.status}"
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            message += f"（Retry-After: {retry_after} 秒）"
+        return message
+
+    @staticmethod
+    def _solve_replay_challenge(seed: str, difficulty: int, max_attempts: int) -> str:
+        """Find the challenge proof without exceeding the configured work budget."""
+        if not 0 <= difficulty <= 256:
+            raise RuntimeError(f"服务端返回了无效的 PoW 难度: {difficulty}")
+
+        target = 1 << (256 - difficulty) if difficulty else 1 << 256
+        for counter in range(max_attempts):
+            digest = hashlib.sha256(f"{seed}:{counter}".encode("utf-8")).digest()
+            if int.from_bytes(digest, "big") < target:
+                return str(counter)
+        raise RuntimeError(
+            f"服务端 PoW 难度超出本客户端处理能力（最大 {Main.MAX_POW_DIFFICULTY} bit），"
+            "请稍后重试"
+        )
+
+    async def _fetch_nonce_batch(self, session: aiohttp.ClientSession, nonce_type: str) -> None:
+        count = self.NONCE_BATCH_SIZE
+        requested = {"read": count if nonce_type == "read" else 0,
+                     "write": count if nonce_type == "write" else 0}
+        headers = self._api_headers()
+        challenge_url = f"{self.api_base_url}/api/replay/challenge"
+        nonce_url = f"{self.api_base_url}/api/replay/nonce"
+
+        for attempt in range(2):
+            async with session.get(
+                challenge_url, params=requested, headers=headers, timeout=15
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"获取 API 安全挑战失败，{self._api_status_message(response)}"
+                    )
+                challenge_body = await response.json()
+
+            challenge_data = challenge_body.get("data")
+            if not challenge_body.get("success") or not isinstance(challenge_data, dict):
+                raise RuntimeError("服务端未返回可识别的 API 安全挑战")
+            if challenge_data.get("algorithm") != "sha256-leading-zero-bits":
+                if attempt == 0:
+                    continue
+                raise RuntimeError("服务端返回了不支持的 API 安全挑战算法")
+
+            seed = challenge_data.get("seed")
+            challenge = challenge_data.get("challenge")
+            difficulty = challenge_data.get("difficulty")
+            if (not isinstance(seed, str) or not isinstance(challenge, str)
+                    or not isinstance(difficulty, int) or isinstance(difficulty, bool)):
+                raise RuntimeError("服务端 API 安全挑战字段无效")
+            if difficulty > self.MAX_POW_DIFFICULTY:
+                raise RuntimeError(
+                    f"服务端 PoW 难度超出本客户端处理能力（最大 "
+                    f"{self.MAX_POW_DIFFICULTY} bit），请稍后重试"
+                )
+
+            proof = await asyncio.to_thread(
+                self._solve_replay_challenge, seed, difficulty, self.MAX_POW_ATTEMPTS
+            )
+            async with session.get(
+                nonce_url,
+                params={**requested, "challenge": challenge, "proof": proof},
+                headers=headers,
+                timeout=15,
+            ) as response:
+                if response.status == 409 and attempt == 0:
+                    continue
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"领取 API nonce 失败，{self._api_status_message(response)}"
+                    )
+                nonce_body = await response.json()
+
+            nonce_data = nonce_body.get("data")
+            nonce_lists = nonce_data.get("nonces") if isinstance(nonce_data, dict) else None
+            values = nonce_lists.get(nonce_type) if isinstance(nonce_lists, dict) else None
+            if (not nonce_body.get("success") or not isinstance(values, list)
+                    or len(values) < count
+                    or any(not isinstance(value, str) or not value for value in values[:count])):
+                raise RuntimeError("服务端返回的 API nonce 列表无效")
+
+            expires_in = nonce_data.get("expiresIn")
+            expiry = None
+            if isinstance(expires_in, (int, float)) and expires_in > 0:
+                expiry = time.monotonic() + expires_in
+            self._nonce_pools[nonce_type] = values[:count]
+            self._nonce_expiry[nonce_type] = expiry
+            return
+
+        raise RuntimeError("API nonce 挑战兑换被拒绝，请稍后重试")
+
+    async def _get_api_nonce(self, session: aiohttp.ClientSession, method: str) -> str:
+        nonce_type = "read" if method.upper() == "GET" else "write"
+        async with self._nonce_lock:
+            expiry = self._nonce_expiry[nonce_type]
+            if expiry is not None and time.monotonic() >= expiry:
+                self._nonce_pools[nonce_type].clear()
+            if not self._nonce_pools[nonce_type]:
+                await self._fetch_nonce_batch(session, nonce_type)
+            return self._nonce_pools[nonce_type].pop()
+
+    async def _request_api(
+        self, session: aiohttp.ClientSession, method: str, url: str, **kwargs
+    ) -> aiohttp.ClientResponse:
+        headers = self._api_headers()
+        headers.update(kwargs.pop("headers", {}))
+        for attempt in range(2):
+            request_headers = dict(headers)
+            request_headers["X-Neko-Nonce"] = await self._get_api_nonce(session, method)
+            response = await session.request(
+                method, url, headers=request_headers, **kwargs
+            )
+            if response.status != 409 or attempt == 1:
+                return response
+            response.release()
+            nonce_type = "read" if method.upper() == "GET" else "write"
+            async with self._nonce_lock:
+                self._nonce_pools[nonce_type].clear()
+                self._nonce_expiry[nonce_type] = None
+        raise RuntimeError("API 请求重试失败")
 
     @filter.regex(r"^点歌.*")
     async def search_music(self, event: AstrMessageEvent):
@@ -428,7 +574,9 @@ class Main(Star):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(api_url, json=json_data, timeout=10) as response:
+                async with await self._request_api(
+                    session, "POST", api_url, json=json_data, timeout=10
+                ) as response:
                     if response.status == 200:
                         data = await response.json()
                         result_data = self.handle_search_result(data)
@@ -472,7 +620,9 @@ class Main(Star):
                             return
 
                         # 使用 drawer 绘制图片
-                        image_bytes = await self.drawer.draw_search_result(keyword, result_data, session)
+                        image_bytes = await self.drawer.draw_search_result(
+                            keyword, result_data, session, self._api_headers()
+                        )
 
                         if image_bytes:
                             # 构建提示文本（在文本中嵌入用户消息ID，用于后续匹配）
@@ -485,7 +635,9 @@ class Main(Star):
                         else:
                             yield event.plain_result("图片生成失败，请稍后重试")
                     else:
-                        yield event.plain_result(f"搜索失败,API 返回状态码: {response.status}")
+                        yield event.plain_result(
+                            f"搜索失败, API 返回 {self._api_status_message(response)}"
+                        )
         except Exception as e:
             logger.error(f"搜索音乐时发生错误: {str(e)}")
             yield event.plain_result(f"搜索失败: {str(e)}")
@@ -836,7 +988,7 @@ class Main(Star):
             return
 
         # 生成播放链接
-        play_url = f"https://music.cnmsb.xin/detail/{song_id}"
+        play_url = f"{self.PUBLIC_API_BASE_URL}/detail/{song_id}"
         audio_url = f"{self.api_base_url}/api/music/file/{song_id}"
 
         # 先返回播放链接
@@ -968,7 +1120,7 @@ class Main(Star):
                                audio_url: str, song_id, song_name: str) -> float | None:
         """HEAD 预检远端文件大小，返回 MB 数；失败返回 None。"""
         try:
-            async with session.head(audio_url, timeout=15) as resp:
+            async with session.head(audio_url, timeout=15, headers=self._api_headers()) as resp:
                 cl = resp.headers.get("Content-Length")
                 if cl:
                     size_mb = int(cl) / (1024 * 1024)
@@ -1025,9 +1177,13 @@ class Main(Star):
             )
 
             # 流式下载 → 直接喂给 ffmpeg stdin
-            async with session.get(audio_url, timeout=120) as audio_resp:
+            async with await self._request_api(
+                session, "GET", audio_url, timeout=120
+            ) as audio_resp:
                 if audio_resp.status != 200:
-                    logger.error(f"下载音频失败,状态码: {audio_resp.status}")
+                    logger.error(
+                        f"下载音频失败, {self._api_status_message(audio_resp)}"
+                    )
                     proc.kill()
                     return None
 

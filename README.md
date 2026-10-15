@@ -59,7 +59,7 @@
 机器人会返回播放链接,包含:
 - 歌曲名称
 - Neko云音乐宣传语
-- 播放链接 (https://music.cnmsb.xin/detail/{歌曲ID})
+- 播放链接 (https://music.nekocore.cn/detail/{歌曲ID})
 
 ### 示例
 
@@ -90,7 +90,7 @@
 ```
 🎵 正在播放: Lemon
 🎶 Neko云音乐。听见好音乐
-🔗 https://music.cnmsb.xin/detail/524
+🔗 https://music.nekocore.cn/detail/524
 
 [自动发送语音消息，可直接播放收听]
 ```
@@ -107,6 +107,18 @@
 ## 配置说明
 
 本插件无需额外配置,安装即可使用。
+
+### API 安全与客户端兼容
+
+默认 API 地址为 `https://music.nekocore.cn`。插件按 Neko 云音乐 API 最新约定自动携带
+客户端标识，并为音乐搜索和音频解析处理一次性 nonce；封面和 `HEAD` 文件信息请求使用对应的公开接口约定。
+高难度安全挑战会在后台有限度地计算；若服务端要求的难度超出插件处理能力，请稍后重试。
+
+接口约定详见 [NekoMusicDocs](https://github.com/FantasyNetworkCN/NekoMusicDocs)，包括
+[防爬与客户端识别](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E9%98%B2%E7%88%AC%E4%B8%8E%E5%AE%A2%E6%88%B7%E7%AB%AF%E8%AF%86%E5%88%AB.md)、
+[请求防重放](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E8%AF%B7%E6%B1%82%E9%98%B2%E9%87%8D%E6%94%BE.md)和
+[滑块人机验证](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E6%BB%91%E5%9D%97%E4%B8%8E%E4%BA%BA%E6%9C%BA%E9%AA%8C%E8%AF%81.md)。
+本插件只调用公开音乐搜索与播放接口，不涉及注册或滑块验证流程。
 
 ### 注意事项
 
@@ -141,7 +153,8 @@
 ## 致谢
 
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) - 强大的 QQ 机器人框架
-- [Neko云音乐](https://music.cnmsb.xin) - 音乐数据来源
+- [Neko云音乐](https://music.nekocore.cn) - 音乐数据来源
+- [NekoMusicDocs](https://github.com/FantasyNetworkCN/NekoMusicDocs) - API 文档
 
 ## 作者
 
