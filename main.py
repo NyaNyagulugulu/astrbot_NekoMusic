@@ -362,8 +362,8 @@ class MusicSearchDrawer:
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
     API_CLIENT_VERSION = "1.9.3"
-    API_CLIENT_NAME = f"astrbot-nekomusic+{API_CLIENT_VERSION}"
-    API_USER_AGENT = f"AstrBot-NekoMusic/{API_CLIENT_VERSION}"
+    API_CLIENT_NAME = f"NekoMusic-pc+{API_CLIENT_VERSION}"
+    API_USER_AGENT = f"NekoMusic-pc/{API_CLIENT_VERSION} (AstrBot plugin)"
     NONCE_BATCH_SIZE = 8
     MAX_POW_DIFFICULTY = 20
     MAX_POW_ATTEMPTS = 1 << (MAX_POW_DIFFICULTY + 3)

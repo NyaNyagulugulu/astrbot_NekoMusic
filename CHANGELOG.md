@@ -5,6 +5,7 @@
 ### 更新
 - 🔗 切换至 Neko 云音乐新 API 域名 `music.nekocore.cn`
 - 🛡️ 按最新 API 规范自动携带客户端标识，并处理一次性 nonce 与 SHA-256 挑战
+- 🪪 使用 `NekoMusic-pc` User-Agent 和 `X-Neko-Client: NekoMusic-pc+1.9.3`，不伪装成浏览器
 - ⏳ PoW 在后台线程运行并限制最大难度，超出处理能力时明确提示稍后重试
 - 📝 更新播放链接、图片署名及 README 中的 API 地址和安全说明
 
