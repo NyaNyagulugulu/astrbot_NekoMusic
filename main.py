@@ -363,9 +363,16 @@ class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
     API_CLIENT_VERSION = "1.9.3"
     API_CLIENT_NAME = f"NekoMusic-pc+{API_CLIENT_VERSION}"
-    API_USER_AGENT = f"NekoMusic-pc/{API_CLIENT_VERSION} (AstrBot plugin)"
+    # 服务端 /api/* 会区分客户端：非浏览器 UA 必须是严格形态的官方客户端标识
+    # （NekoMusic-<平台>/<版本>，且不能含 bot / curl 等关键词），否则一律 403。
+    API_USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
     NONCE_BATCH_SIZE = 8
-    MAX_POW_DIFFICULTY = 20
+    # 服务端基准难度就是 20 bit（加压每档 +2 bit），卡在 20 等于一加压就必失败，
+    # 留两档余量；更难时按约定退避重试，不硬解。
+    MAX_POW_DIFFICULTY = 24
     MAX_POW_ATTEMPTS = 1 << (MAX_POW_DIFFICULTY + 3)
 
     def __init__(self, context: Context, config: dict = None):
@@ -426,10 +433,20 @@ class Main(Star):
         self._startup_cache_cleanup()
 
     def _api_headers(self) -> dict:
+        """浏览器形态请求头：UA 结构、Accept 与 Accept-Language 都是服务端判定依据。"""
         return {
             "User-Agent": self.API_USER_AGENT,
             "X-Neko-Client": self.API_CLIENT_NAME,
+            "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
+            "Origin": self.api_base_url,
+            "Referer": f"{self.api_base_url}/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
         }
 
     @staticmethod
@@ -989,7 +1006,6 @@ class Main(Star):
 
         # 生成播放链接
         play_url = f"{self.PUBLIC_API_BASE_URL}/detail/{song_id}"
-        audio_url = f"{self.api_base_url}/api/music/file/{song_id}"
 
         # 先返回播放链接
         send_type = "文件" if platform == 'discord' else "语音"
@@ -1001,8 +1017,16 @@ class Main(Star):
         # 下载音频并发送语音（流式管道转码 + 本地缓存）
         try:
             async with aiohttp.ClientSession() as session:
-                # 第一步：HEAD 预检文件大小，按转码后估算判断
-                head_size_mb = await self._head_check_size(session, audio_url, song_id, song_name)
+                # 第一步：解析媒体直链（/api/music/file/{id} 只返回 JSON 指针，不是音频字节）
+                media_url = await self._resolve_media_url(session, song_id)
+                if not media_url:
+                    yield event.plain_result(
+                        f"❌ 无法解析音频地址，请直接点击播放链接收听: {play_url}"
+                    )
+                    return
+
+                # 第二步：HEAD 预检文件大小，判断是否值得下载
+                head_size_mb = await self._head_check_size(session, media_url, song_id, song_name)
                 if head_size_mb is not None:
                     # 安全上限：原始文件超大 (>500MB) 直接拒绝
                     if head_size_mb > 500:
@@ -1012,22 +1036,25 @@ class Main(Star):
                         )
                         return
 
-                    # 按目标码率估算转码后 MP3 大小（假设 FLAC 平均 ~900kbps）
-                    est_mp3_mb = head_size_mb * self.audio_bitrate / 900
+                    # 估算降码率到底（32kbps）后仍超平台限制才提前拒绝，否则交给转码后重压
                     platform_max = self._get_platform_max_size(platform)
+                    floor_kbps = min(self.audio_bitrate, 32)
+                    est_mp3_mb = self._estimate_transcoded_mb(
+                        head_size_mb, song.get("duration"), floor_kbps
+                    )
                     if est_mp3_mb > platform_max:
                         yield event.plain_result(
-                            f"⚠️ 原始文件 {head_size_mb:.1f}MB，预计转码后 ~{est_mp3_mb:.1f}MB，"
-                            f"仍超过平台限制 ({platform_max}MB)\n"
+                            f"⚠️ 原始文件 {head_size_mb:.1f}MB，即便降到 {floor_kbps}kbps 也要 "
+                            f"~{est_mp3_mb:.1f}MB，超过平台限制 ({platform_max}MB)\n"
                             f"请直接点击播放链接收听: {play_url}"
                         )
                         return
                     logger.info(
-                        f"原始 {head_size_mb:.1f}MB → 预估 MP3 {est_mp3_mb:.1f}MB "
-                        f"(码率 {self.audio_bitrate}kbps, 平台限制 {platform_max}MB)"
+                        f"原始 {head_size_mb:.1f}MB → 最低档预估 {est_mp3_mb:.1f}MB "
+                        f"(最低 {floor_kbps}kbps, 目标 {self.audio_bitrate}kbps, 平台限制 {platform_max}MB)"
                     )
 
-                # 第二步：检查本地缓存
+                # 第三步：检查本地缓存
                 cache_path = self._get_cache_path(song_id)
                 if os.path.exists(cache_path):
                     cache_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
@@ -1048,13 +1075,13 @@ class Main(Star):
                         send_path = cache_path
                         needs_cleanup = False
                 else:
-                    # 第三步：缓存未命中 → 流式下载 + ffmpeg 管道转码
+                    # 第四步：缓存未命中 → 流式下载 + ffmpeg 管道转码
                     logger.info(f"缓存未命中，开始流式下载并转码 (song_id={song_id})")
                     if self.show_transcode_hint:
                         yield event.plain_result("🎵 正在下载并转码音频，请稍候...")
 
                     temp_path = await self._stream_download_and_compress(
-                        session, audio_url, song_id, song_name, platform
+                        session, media_url, song_id, song_name, platform
                     )
                     if temp_path is None:
                         yield event.plain_result(f"❌ 音频处理失败，请直接点击播放链接收听: {play_url}")
@@ -1072,7 +1099,7 @@ class Main(Star):
                         send_path = temp_path
                         needs_cleanup = True
 
-                # 第四步：发送音频
+                # 第五步：发送音频
                 logger.info(f"开始发送音频到 {platform} 平台")
                 filename = os.path.basename(send_path)
 
@@ -1116,11 +1143,57 @@ class Main(Star):
         if expired:
             logger.info(f"清理了 {len(expired)} 条过期搜索结果")
 
-    async def _head_check_size(self, session: aiohttp.ClientSession,
-                               audio_url: str, song_id, song_name: str) -> float | None:
-        """HEAD 预检远端文件大小，返回 MB 数；失败返回 None。"""
+    async def _resolve_media_url(self, session: aiohttp.ClientSession, song_id) -> str | None:
+        """把 /api/music/file/{id} 的响应解析成可直接下载的媒体直链。
+
+        该接口返回的是 JSON 指针（{"success":true,"data":{"url":"/media/music/..."}}），
+        不是音频字节；音频本身由 /media/* 静态直链提供（CDN，无需 nonce）。
+        失败返回 None。
+        """
+        api_url = f"{self.api_base_url}/api/music/file/{song_id}"
         try:
-            async with session.head(audio_url, timeout=15, headers=self._api_headers()) as resp:
+            async with await self._request_api(
+                session, "GET", api_url, timeout=15
+            ) as response:
+                if response.status != 200:
+                    logger.error(f"解析音频地址失败, {self._api_status_message(response)}")
+                    return None
+                body = await response.json()
+        except Exception as e:
+            logger.error(f"解析音频地址异常: {e}")
+            return None
+
+        if not isinstance(body, dict) or not body.get("success"):
+            logger.error(f"音频地址响应无效: {str(body)[:200]}")
+            return None
+
+        data = body.get("data")
+        url = data.get("url") if isinstance(data, dict) else None
+        if not isinstance(url, str) or not url:
+            logger.error(f"音频地址响应缺少 url: {str(body)[:200]}")
+            return None
+
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        return f"{self.api_base_url}{url}" if url.startswith("/") else f"{self.api_base_url}/{url}"
+
+    def _estimate_transcoded_mb(self, size_mb: float, duration, target_kbps: int) -> float:
+        """估算转成 target_kbps 后的体积；duration 不可用时按源码率粗估。"""
+        try:
+            seconds = float(duration)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        if seconds > 14400:  # 服务端若以毫秒下发，按毫秒折算
+            seconds /= 1000.0
+        if seconds > 0:
+            return seconds * target_kbps / 8 / 1024
+        return size_mb * target_kbps / 320
+
+    async def _head_check_size(self, session: aiohttp.ClientSession,
+                               media_url: str, song_id, song_name: str) -> float | None:
+        """HEAD 预检媒体直链大小，返回 MB 数；失败返回 None。"""
+        try:
+            async with session.head(media_url, timeout=15, headers=self._api_headers()) as resp:
                 cl = resp.headers.get("Content-Length")
                 if cl:
                     size_mb = int(cl) / (1024 * 1024)
@@ -1144,11 +1217,11 @@ class Main(Star):
             return 10  # QQ / aiocqhttp / unknown
 
     async def _stream_download_and_compress(self, session: aiohttp.ClientSession,
-                                             audio_url: str, song_id,
+                                             media_url: str, song_id,
                                              song_name: str, platform: str) -> str | None:
-        """流式下载 FLAC 并通过 ffmpeg 管道实时转码为 MP3。
+        """流式下载媒体直链并通过 ffmpeg 管道实时转码为 MP3。
 
-        边下边压，磁盘上只存压缩后的 MP3，避免 50MB FLAC 暂存。
+        边下边压，磁盘上只存压缩后的 MP3，避免几十 MB 原始音频暂存。
         返回临时文件路径，失败返回 None。
         """
         # 检查 ffmpeg 是否可用
@@ -1176,14 +1249,12 @@ class Main(Star):
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            # 流式下载 → 直接喂给 ffmpeg stdin
-            async with await self._request_api(
-                session, "GET", audio_url, timeout=120
+            # 流式下载 /media/* 直链（静态资源，不经 nonce）→ 直接喂给 ffmpeg stdin
+            async with session.get(
+                media_url, timeout=120, headers=self._api_headers()
             ) as audio_resp:
                 if audio_resp.status != 200:
-                    logger.error(
-                        f"下载音频失败, {self._api_status_message(audio_resp)}"
-                    )
+                    logger.error(f"下载音频失败, HTTP {audio_resp.status}")
                     proc.kill()
                     return None
 
@@ -1204,7 +1275,7 @@ class Main(Star):
                 return None
 
             out_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
-            logger.info(f"流式转码完成: {downloaded / (1024*1024):.1f}MB FLAC → {out_size_mb:.2f}MB MP3 "
+            logger.info(f"流式转码完成: {downloaded / (1024*1024):.1f}MB 原始 → {out_size_mb:.2f}MB MP3 "
                         f"({song_name}, id={song_id})")
 
             # 如果压缩后仍然超过平台限制，尝试降码率再压一次

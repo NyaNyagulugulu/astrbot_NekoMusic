@@ -5,9 +5,18 @@
 ### 更新
 - 🔗 切换至 Neko 云音乐新 API 域名 `music.nekocore.cn`
 - 🛡️ 按最新 API 规范自动携带客户端标识，并处理一次性 nonce 与 SHA-256 挑战
-- 🪪 使用 `NekoMusic-pc` User-Agent 和 `X-Neko-Client: NekoMusic-pc+1.9.3`，不伪装成浏览器
+- 🪪 改用浏览器形态 `User-Agent`（配套 `Accept` / `Accept-Language` / `Origin` 等头），
+  规避服务端防爬判定的 403；`X-Neko-Client: NekoMusic-pc+1.9.3` 保留用于服务端标注来源
 - ⏳ PoW 在后台线程运行并限制最大难度，超出处理能力时明确提示稍后重试
 - 📝 更新播放链接、图片署名及 README 中的 API 地址和安全说明
+
+### 修复
+- 🐛 修复点歌无法发声：`/api/music/file/{id}` 返回的是媒体直链 JSON 而非音频字节，
+  现改为先解析直链再流式下载转码（原实现把 75 字节 JSON 喂给 ffmpeg）
+- 🐛 修复文件体积预检一直失效：`HEAD` 打 `/api/*` 会被 CDN 改写并因缺 nonce 得 409，
+  现改为对 `/media/*` 媒体直链预检
+- 🐛 体积预检改为按实际时长估算，且只在「降到 32kbps 仍超平台限制」时才拒绝
+- 🐛 PoW 难度上限由 20 bit 提到 24 bit，避免服务端加压一档就整批 nonce 领不到
 
 ## [1.9.2] - 2026-07-18
 
