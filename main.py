@@ -1009,10 +1009,12 @@ class Main(Star):
         # 获取歌曲信息并委托给 _play_song
         logger.info(f"准备播放第 {index + 1} 首歌曲")
         song = songs[index]
-        # 这条序号已被本插件接管：终止事件传播，避免默认 LLM / 其它插件再答一遍
-        event.stop_event()
         async for result in self._play_song(song, platform, event):
             yield result
+        # 所有结果发送完成后再终止事件传播，避免默认 LLM / 其它插件再答一遍。
+        # 不能在 _play_song 前调用：AstrBot 检测到事件停止后会停止消费后续 yield，
+        # 导致只发出播放链接提示，语音 Record 永远不会发送。
+        event.stop_event()
         return
 
     async def _play_song(self, song: dict, platform: str, event: AstrMessageEvent):
