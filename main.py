@@ -369,12 +369,11 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.4", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.5", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
-    API_CLIENT_VERSION = "1.9.4"
-    API_CLIENT_PLATFORM = "pc"
-    API_CLIENT_NAME = f"{API_CLIENT_PLATFORM}+{API_CLIENT_VERSION}"
+    API_CLIENT_VERSION = "1.9.5"
+    DEFAULT_CLIENT_PLATFORM = "pc"
     CLIENT_IDENTITY_FILENAME = ".neko_client_identity.json"
     CLIENT_TOKEN_REFRESH_MARGIN = 60
     # 服务端 /api/* 会区分客户端：X-Neko-Client 必须是 <平台>+<版本>，
@@ -444,10 +443,20 @@ class Main(Star):
         self.client_secret = str(
             self.config.get("client_secret", schema_defaults.get("client_secret", "")) or ""
         ).strip()
+        self.client_platform = str(
+            self.config.get(
+                "client_platform",
+                schema_defaults.get("client_platform", self.DEFAULT_CLIENT_PLATFORM),
+            ) or self.DEFAULT_CLIENT_PLATFORM
+        ).strip().lower()
 
-        self._client_auth_enabled = bool(self.client_id and self.client_secret)
+        platform_valid = bool(re.fullmatch(r"[a-z][a-z0-9]{1,23}", self.client_platform))
+        self._client_auth_enabled = bool(self.client_id and self.client_secret and platform_valid)
         if not self._client_auth_enabled:
-            logger.warning("未配置 client_id/client_secret，NekoMusic 在线 API 将返回 401")
+            if not platform_valid:
+                logger.warning("client_platform 格式无效，必须为 2-24 位小写字母/数字且以字母开头")
+            else:
+                logger.warning("未配置 client_id/client_secret，NekoMusic 在线 API 将返回 401")
         else:
             self._client_identity = self._load_or_create_client_identity()
 
@@ -468,7 +477,7 @@ class Main(Star):
         """浏览器形态请求头：UA 结构、Accept 与 Accept-Language 都是服务端判定依据。"""
         headers = {
             "User-Agent": self.API_USER_AGENT,
-            "X-Neko-Client": self.API_CLIENT_NAME,
+            "X-Neko-Client": f"{self.client_platform}+{self.API_CLIENT_VERSION}",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Origin": self.api_base_url,
@@ -500,7 +509,7 @@ class Main(Star):
         ).decode("ascii")
         return {
             "client_id": self.client_id,
-            "platform": self.API_CLIENT_PLATFORM,
+            "platform": self.client_platform,
             "instance_id": str(uuid.uuid4()),
             "private_key_pem": private_key_pem,
             "token": None,
@@ -515,7 +524,7 @@ class Main(Star):
                 stored = json.load(f)
             if (isinstance(stored, dict)
                     and stored.get("client_id") == self.client_id
-                    and stored.get("platform") == self.API_CLIENT_PLATFORM
+                    and stored.get("platform") == self.client_platform
                     and isinstance(stored.get("instance_id"), str)
                     and isinstance(stored.get("private_key_pem"), str)):
                 serialization.load_pem_private_key(
@@ -582,7 +591,7 @@ class Main(Star):
         url = f"{self.api_base_url}/api/client/challenge"
         params = {
             "client_id": self.client_id,
-            "platform": self.API_CLIENT_PLATFORM,
+            "platform": self.client_platform,
             "purpose": purpose,
         }
         async with session.get(
@@ -613,7 +622,7 @@ class Main(Star):
         payload = "\n".join([
             "neko-client-register-v1",
             self.client_id,
-            self.API_CLIENT_PLATFORM,
+            self.client_platform,
             identity["instance_id"],
             public_key,
             challenge,
@@ -622,7 +631,7 @@ class Main(Star):
         signature = self._sign_client_identity_payload(payload)
         request_body = {
             "client_id": self.client_id,
-            "platform": self.API_CLIENT_PLATFORM,
+            "platform": self.client_platform,
             "instance_id": identity["instance_id"],
             "public_key": public_key,
             "challenge": challenge,
@@ -669,7 +678,7 @@ class Main(Star):
         payload = "\n".join([
             "neko-client-token-v1",
             self.client_id,
-            self.API_CLIENT_PLATFORM,
+            self.client_platform,
             identity["instance_id"],
             challenge,
             str(timestamp),
@@ -677,7 +686,7 @@ class Main(Star):
         signature = self._sign_client_identity_payload(payload)
         request_body = {
             "client_id": self.client_id,
-            "platform": self.API_CLIENT_PLATFORM,
+            "platform": self.client_platform,
             "instance_id": identity["instance_id"],
             "challenge": challenge,
             "timestamp": timestamp,
@@ -766,7 +775,7 @@ class Main(Star):
             raw_query,
             self.client_id,
             self._client_identity["instance_id"],
-            self.API_CLIENT_PLATFORM,
+            self.client_platform,
             timestamp,
             body_hash,
             nonce,

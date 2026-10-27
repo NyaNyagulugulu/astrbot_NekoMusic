@@ -5,6 +5,12 @@
         "default": "",
         "hint": "在 NekoMusicDocs 申请并分配给本客户端的 Client ID，必填；未填写时在线 API 将返回 401"
     },
+    "client_platform": {
+        "description": "NekoMusic Client 平台",
+        "type": "string",
+        "default": "pc",
+        "hint": "必须与 Client ID 申请时绑定的平台完全一致（如 pc、web、android），不一致会返回 401"
+    },
     "client_secret": {
         "description": "NekoMusic Client Secret",
         "type": "string",

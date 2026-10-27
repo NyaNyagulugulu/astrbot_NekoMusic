@@ -106,11 +106,12 @@
 
 ## 配置说明
 
-在线 API 需要配置以下两项（请通过 NekoMusic 官方审核流程申请，Client ID 需绑定 `pc` 平台）：
+在线 API 需要配置以下项目（请通过 NekoMusic 官方审核流程申请）：
 
 | 配置项 | 说明 |
 |--------|------|
 | `client_id` | NekoMusic 分配的客户端 ID |
+| `client_platform` | 与 Client ID 绑定的平台，默认 `pc`，必须完全一致 |
 | `client_secret` | 与 Client ID 配对的客户端密钥，请勿泄露 |
 
 未配置或凭据无效时，在线 API 会返回 `401`。首次请求时插件会自动完成客户端实例注册，
