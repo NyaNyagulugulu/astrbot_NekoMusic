@@ -369,19 +369,17 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.5", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.6", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
-    API_CLIENT_VERSION = "1.9.5"
+    API_CLIENT_VERSION = "1.9.6"
     DEFAULT_CLIENT_PLATFORM = "pc"
     CLIENT_IDENTITY_FILENAME = ".neko_client_identity.json"
     CLIENT_TOKEN_REFRESH_MARGIN = 60
     # 服务端 /api/* 会区分客户端：X-Neko-Client 必须是 <平台>+<版本>，
-    # 且平台必须与 Client ID 绑定平台一致。
-    API_USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
+    # 且平台必须与 Client ID 绑定平台一致。第三方客户端使用版本化原生 UA，
+    # 伪装浏览器 UA 会被 WAF 降级为 HTML 挑战页。
+    API_USER_AGENT = f"NekoMusic-PC/{API_CLIENT_VERSION}"
     NONCE_BATCH_SIZE = 8
     # 服务端基准难度就是 20 bit（加压每档 +2 bit），卡在 20 等于一加压就必失败，
     # 留两档余量；更难时按约定退避重试，不硬解。
@@ -480,14 +478,6 @@ class Main(Star):
             "X-Neko-Client": f"{self.client_platform}+{self.API_CLIENT_VERSION}",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
-            "Origin": self.api_base_url,
-            "Referer": f"{self.api_base_url}/",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
         }
         if self.client_id:
             headers["X-Neko-Client-Id"] = self.client_id

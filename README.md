@@ -121,8 +121,8 @@
 
 ### API 安全与客户端兼容
 
-默认 API 地址为 `https://music.nekocore.cn`。插件按 Neko 云音乐 API 最新约定携带完整浏览器形态
-请求头（`User-Agent` / `Accept` / `Accept-Language` / `Origin`），并用 `X-Neko-Client` 标注来源；
+默认 API 地址为 `https://music.nekocore.cn`。插件按 Neko 云音乐 API 最新约定携带版本化原生
+客户端 UA、`Accept` / `Accept-Language`，并用 `X-Neko-Client` 标注平台与版本；
 音乐搜索与音频解析均按约定处理一次性 nonce、客户端实例令牌和请求签名。
 高难度安全挑战会在后台有限度地计算；若服务端要求的难度超出插件处理能力，请稍后重试。
 
