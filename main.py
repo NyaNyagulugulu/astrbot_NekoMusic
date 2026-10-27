@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import io
 import json
@@ -9,14 +10,24 @@ import tempfile
 import time
 import traceback
 import textwrap
+import uuid
 from typing import Dict, List, Tuple
+from urllib.parse import urlencode, urlsplit
 
 import aiohttp
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from PIL import Image, ImageDraw, ImageFont
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
+
+
+class NekoClientAuthError(RuntimeError):
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class MusicSearchDrawer:
@@ -358,13 +369,16 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.3", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.4", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
-    API_CLIENT_VERSION = "1.9.3"
-    API_CLIENT_NAME = f"NekoMusic-pc+{API_CLIENT_VERSION}"
-    # 服务端 /api/* 会区分客户端：非浏览器 UA 必须是严格形态的官方客户端标识
-    # （NekoMusic-<平台>/<版本>，且不能含 bot / curl 等关键词），否则一律 403。
+    API_CLIENT_VERSION = "1.9.4"
+    API_CLIENT_PLATFORM = "pc"
+    API_CLIENT_NAME = f"{API_CLIENT_PLATFORM}+{API_CLIENT_VERSION}"
+    CLIENT_IDENTITY_FILENAME = ".neko_client_identity.json"
+    CLIENT_TOKEN_REFRESH_MARGIN = 60
+    # 服务端 /api/* 会区分客户端：X-Neko-Client 必须是 <平台>+<版本>，
+    # 且平台必须与 Client ID 绑定平台一致。
     API_USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -387,6 +401,8 @@ class Main(Star):
         self._nonce_pools = {"read": [], "write": []}
         self._nonce_expiry = {"read": None, "write": None}
         self._nonce_lock = asyncio.Lock()
+        self._client_identity_lock = asyncio.Lock()
+        self._client_identity = None
         # 搜索结果 TTL（秒），超时自动清理
         self.SEARCH_TTL = 1800  # 30 分钟
 
@@ -422,6 +438,19 @@ class Main(Star):
             self.show_play_link = schema_defaults.get("show_play_link", True)
             self.show_transcode_hint = schema_defaults.get("show_transcode_hint", True)
 
+        self.client_id = str(
+            self.config.get("client_id", schema_defaults.get("client_id", "")) or ""
+        ).strip()
+        self.client_secret = str(
+            self.config.get("client_secret", schema_defaults.get("client_secret", "")) or ""
+        ).strip()
+
+        self._client_auth_enabled = bool(self.client_id and self.client_secret)
+        if not self._client_auth_enabled:
+            logger.warning("未配置 client_id/client_secret，NekoMusic 在线 API 将返回 401")
+        else:
+            self._client_identity = self._load_or_create_client_identity()
+
         # 设置API基础URL
         if self.use_local_server:
             self.api_base_url = f"http://localhost:{self.local_server_port}"
@@ -437,7 +466,7 @@ class Main(Star):
 
     def _api_headers(self) -> dict:
         """浏览器形态请求头：UA 结构、Accept 与 Accept-Language 都是服务端判定依据。"""
-        return {
+        headers = {
             "User-Agent": self.API_USER_AGENT,
             "X-Neko-Client": self.API_CLIENT_NAME,
             "Accept": "application/json, text/plain, */*",
@@ -451,13 +480,306 @@ class Main(Star):
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"Windows"',
         }
+        if self.client_id:
+            headers["X-Neko-Client-Id"] = self.client_id
+        return headers
+
+    def _client_identity_path(self) -> str:
+        return os.path.join(os.path.dirname(__file__), self.CLIENT_IDENTITY_FILENAME)
 
     @staticmethod
-    def _api_status_message(response: aiohttp.ClientResponse) -> str:
+    def _base64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    def _generate_client_identity(self) -> dict:
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        private_key_pem = private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("ascii")
+        return {
+            "client_id": self.client_id,
+            "platform": self.API_CLIENT_PLATFORM,
+            "instance_id": str(uuid.uuid4()),
+            "private_key_pem": private_key_pem,
+            "token": None,
+            "expires_at": 0,
+        }
+
+    def _load_or_create_client_identity(self) -> dict:
+        path = self._client_identity_path()
+        identity = None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if (isinstance(stored, dict)
+                    and stored.get("client_id") == self.client_id
+                    and stored.get("platform") == self.API_CLIENT_PLATFORM
+                    and isinstance(stored.get("instance_id"), str)
+                    and isinstance(stored.get("private_key_pem"), str)):
+                serialization.load_pem_private_key(
+                    stored["private_key_pem"].encode("ascii"), password=None
+                )
+                identity = stored
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"读取 NekoMusic 客户端实例身份失败，将重新生成: {e}")
+
+        if identity is None:
+            identity = self._generate_client_identity()
+        self._save_client_identity(identity)
+        return identity
+
+    def _save_client_identity(self, identity: dict) -> None:
+        path = self._client_identity_path()
+        temp_path = f"{path}.tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(identity, f, ensure_ascii=False, indent=2)
+            os.chmod(temp_path, 0o600)
+            os.replace(temp_path, path)
+        except Exception as e:
+            logger.warning(f"保存 NekoMusic 客户端实例身份失败: {e}")
+
+    def _get_client_private_key(self):
+        identity = self._client_identity
+        if not isinstance(identity, dict) or not identity.get("private_key_pem"):
+            raise RuntimeError("NekoMusic 客户端实例私钥不存在")
+        return serialization.load_pem_private_key(
+            identity["private_key_pem"].encode("ascii"), password=None
+        )
+
+    def _client_public_key(self) -> str:
+        public_key = self._get_client_private_key().public_key()
+        der = public_key.public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return self._base64url(der)
+
+    def _sign_client_identity_payload(self, payload: str) -> str:
+        signature = self._get_client_private_key().sign(
+            payload.encode("utf-8"), ec.ECDSA(hashes.SHA256())
+        )
+        return self._base64url(signature)
+
+    @staticmethod
+    async def _client_response_message(response: aiohttp.ClientResponse) -> str:
+        try:
+            body = await response.json(content_type=None)
+            message = body.get("message") if isinstance(body, dict) else None
+            if isinstance(message, str) and message:
+                return message
+        except Exception:
+            pass
+        return "无错误详情"
+
+    async def _get_client_challenge(
+        self, session: aiohttp.ClientSession, purpose: str
+    ) -> str:
+        url = f"{self.api_base_url}/api/client/challenge"
+        params = {
+            "client_id": self.client_id,
+            "platform": self.API_CLIENT_PLATFORM,
+            "purpose": purpose,
+        }
+        async with session.get(
+            url, params=params, headers=self._api_headers(), timeout=15
+        ) as response:
+            if response.status != 200:
+                message = await self._client_response_message(response)
+                raise NekoClientAuthError(
+                    f"获取客户端身份挑战失败，{self._api_status_message(response)}: {message}",
+                    response.status,
+                )
+            body = await response.json()
+
+        if not isinstance(body, dict):
+            raise NekoClientAuthError("服务端未返回有效的客户端身份挑战")
+        data = body.get("data")
+        challenge = data.get("challenge") if isinstance(data, dict) else None
+        if not body.get("success") or not isinstance(challenge, str) or not challenge:
+            raise NekoClientAuthError("服务端未返回有效的客户端身份挑战")
+        return challenge
+
+    async def _register_client_identity(
+        self, session: aiohttp.ClientSession, identity: dict
+    ) -> None:
+        challenge = await self._get_client_challenge(session, "register")
+        timestamp = int(time.time())
+        public_key = self._client_public_key()
+        payload = "\n".join([
+            "neko-client-register-v1",
+            self.client_id,
+            self.API_CLIENT_PLATFORM,
+            identity["instance_id"],
+            public_key,
+            challenge,
+            str(timestamp),
+        ])
+        signature = self._sign_client_identity_payload(payload)
+        request_body = {
+            "client_id": self.client_id,
+            "platform": self.API_CLIENT_PLATFORM,
+            "instance_id": identity["instance_id"],
+            "public_key": public_key,
+            "challenge": challenge,
+            "timestamp": timestamp,
+            "signature": signature,
+        }
+        headers = self._api_headers()
+        headers.update({
+            "Content-Type": "application/json",
+            "X-Neko-Client-Secret": self.client_secret,
+        })
+        url = f"{self.api_base_url}/api/client/register"
+        async with session.post(
+            url,
+            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            timeout=15,
+        ) as response:
+            if response.status != 200:
+                message = await self._client_response_message(response)
+                raise NekoClientAuthError(
+                    f"注册客户端实例失败，{self._api_status_message(response)}: {message}",
+                    response.status,
+                )
+            body = await response.json()
+
+        data = body.get("data") if isinstance(body, dict) else None
+        token = data.get("token") if isinstance(data, dict) else None
+        if not body.get("success") or not isinstance(token, str) or not token:
+            raise NekoClientAuthError("客户端实例注册响应缺少 token")
+
+        identity["token"] = token
+        expires_at = data.get("expires_at")
+        identity["expires_at"] = expires_at if isinstance(expires_at, (int, float)) else 0
+        self._client_identity = identity
+        self._save_client_identity(identity)
+        logger.info("NekoMusic 客户端实例注册成功")
+
+    async def _renew_client_token(
+        self, session: aiohttp.ClientSession, identity: dict
+    ) -> None:
+        challenge = await self._get_client_challenge(session, "token")
+        timestamp = int(time.time())
+        payload = "\n".join([
+            "neko-client-token-v1",
+            self.client_id,
+            self.API_CLIENT_PLATFORM,
+            identity["instance_id"],
+            challenge,
+            str(timestamp),
+        ])
+        signature = self._sign_client_identity_payload(payload)
+        request_body = {
+            "client_id": self.client_id,
+            "platform": self.API_CLIENT_PLATFORM,
+            "instance_id": identity["instance_id"],
+            "challenge": challenge,
+            "timestamp": timestamp,
+            "signature": signature,
+        }
+        headers = self._api_headers()
+        headers.update({
+            "Content-Type": "application/json",
+            "X-Neko-Client-Secret": self.client_secret,
+        })
+        url = f"{self.api_base_url}/api/client/token"
+        async with session.post(
+            url,
+            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            timeout=15,
+        ) as response:
+            if response.status != 200:
+                message = await self._client_response_message(response)
+                raise NekoClientAuthError(
+                    f"续签客户端实例令牌失败，{self._api_status_message(response)}: {message}",
+                    response.status,
+                )
+            body = await response.json()
+
+        data = body.get("data") if isinstance(body, dict) else None
+        token = data.get("token") if isinstance(data, dict) else None
+        if not body.get("success") or not isinstance(token, str) or not token:
+            raise NekoClientAuthError("客户端实例令牌续签响应缺少 token")
+
+        identity["token"] = token
+        expires_at = data.get("expires_at")
+        identity["expires_at"] = expires_at if isinstance(expires_at, (int, float)) else 0
+        self._client_identity = identity
+        self._save_client_identity(identity)
+        logger.info("NekoMusic 客户端实例令牌续签成功")
+
+    async def _ensure_client_identity(self, session: aiohttp.ClientSession) -> None:
+        if not self._client_auth_enabled:
+            return
+        async with self._client_identity_lock:
+            identity = self._client_identity or self._load_or_create_client_identity()
+            token = identity.get("token")
+            expires_at = identity.get("expires_at")
+            now = time.time()
+            if (isinstance(token, str) and token
+                    and isinstance(expires_at, (int, float))
+                    and expires_at > now + self.CLIENT_TOKEN_REFRESH_MARGIN):
+                return
+
+            if isinstance(token, str) and token:
+                try:
+                    await self._renew_client_token(session, identity)
+                    return
+                except Exception as e:
+                    logger.warning(f"NekoMusic 客户端令牌续签失败，将重新注册: {e}")
+
+            try:
+                await self._register_client_identity(session, identity)
+                return
+            except NekoClientAuthError as e:
+                if e.status != 401:
+                    raise
+                logger.warning("客户端实例身份被拒绝，生成新的实例身份后重试")
+
+            identity = self._generate_client_identity()
+            self._client_identity = identity
+            self._save_client_identity(identity)
+            await self._register_client_identity(session, identity)
+
+    def _invalidate_client_token(self) -> None:
+        if not isinstance(self._client_identity, dict):
+            return
+        self._client_identity["token"] = None
+        self._client_identity["expires_at"] = 0
+        self._save_client_identity(self._client_identity)
+
+    def _sign_api_request(
+        self, method: str, path: str, raw_query: str, body_hash: str,
+        timestamp: str, nonce: str
+    ) -> str:
+        payload = "\n".join([
+            "neko-client-v1",
+            method.upper(),
+            path,
+            raw_query,
+            self.client_id,
+            self._client_identity["instance_id"],
+            self.API_CLIENT_PLATFORM,
+            timestamp,
+            body_hash,
+            nonce,
+        ])
+        return self._sign_client_identity_payload(payload)
+
+    def _api_status_message(self, response: aiohttp.ClientResponse) -> str:
         message = f"HTTP {response.status}"
         retry_after = response.headers.get("Retry-After")
         if retry_after:
             message += f"（Retry-After: {retry_after} 秒）"
+        if response.status == 401:
+            message += "（客户端身份无效，请检查 client_id/client_secret）"
         return message
 
     @staticmethod
@@ -564,19 +886,64 @@ class Main(Star):
     ) -> aiohttp.ClientResponse:
         headers = self._api_headers()
         headers.update(kwargs.pop("headers", {}))
-        for attempt in range(2):
+        params = kwargs.pop("params", None)
+        if params is not None:
+            query = urlencode(params, doseq=True)
+            if query:
+                url = f"{url}{'&' if '?' in url else '?'}{query}"
+
+        json_payload = kwargs.pop("json", None)
+        body = kwargs.pop("data", None)
+        if json_payload is not None:
+            body = json.dumps(
+                json_payload, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            headers.setdefault("Content-Type", "application/json")
+        elif isinstance(body, str):
+            body = body.encode("utf-8")
+        if body is None:
+            body = b""
+        if body:
+            kwargs["data"] = body
+
+        body_hash = hashlib.sha256(body).hexdigest()
+        parsed_url = urlsplit(url)
+        path = parsed_url.path or "/"
+        raw_query = parsed_url.query
+
+        for attempt in range(3):
+            await self._ensure_client_identity(session)
+            nonce = await self._get_api_nonce(session, method)
             request_headers = dict(headers)
-            request_headers["X-Neko-Nonce"] = await self._get_api_nonce(session, method)
+            request_headers["X-Neko-Nonce"] = nonce
+            if self._client_auth_enabled:
+                timestamp = str(int(time.time()))
+                request_headers.update({
+                    "X-Neko-Client-Id": self.client_id,
+                    "X-Neko-Client-Instance": self._client_identity["instance_id"],
+                    "X-Neko-Client-Token": self._client_identity["token"],
+                    "X-Neko-Client-Timestamp": timestamp,
+                    "X-Neko-Client-Signature": self._sign_api_request(
+                        method, path, raw_query, body_hash, timestamp, nonce
+                    ),
+                })
             response = await session.request(
                 method, url, headers=request_headers, **kwargs
             )
-            if response.status != 409 or attempt == 1:
+            if response.status == 409 and attempt < 2:
+                response.release()
+                nonce_type = "read" if method.upper() == "GET" else "write"
+                async with self._nonce_lock:
+                    self._nonce_pools[nonce_type].clear()
+                    self._nonce_expiry[nonce_type] = None
+                continue
+            if response.status == 401 and self._client_auth_enabled and attempt < 2:
+                response.release()
+                self._invalidate_client_token()
+                continue
+            if response.status != 409:
                 return response
-            response.release()
-            nonce_type = "read" if method.upper() == "GET" else "write"
-            async with self._nonce_lock:
-                self._nonce_pools[nonce_type].clear()
-                self._nonce_expiry[nonce_type] = None
+            return response
         raise RuntimeError("API 请求重试失败")
 
     @filter.regex(r"^点歌.*")

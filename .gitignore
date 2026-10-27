@@ -210,3 +210,7 @@ __marimo__/
 demo.py
 demo/
 demo/*
+
+# NekoMusic 客户端实例私钥与短期令牌
+.neko_client_identity.json
+.neko_client_identity.json.tmp

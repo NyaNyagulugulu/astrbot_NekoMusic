@@ -106,16 +106,27 @@
 
 ## 配置说明
 
-本插件无需额外配置,安装即可使用。
+在线 API 需要配置以下两项（请通过 NekoMusic 官方审核流程申请，Client ID 需绑定 `pc` 平台）：
+
+| 配置项 | 说明 |
+|--------|------|
+| `client_id` | NekoMusic 分配的客户端 ID |
+| `client_secret` | 与 Client ID 配对的客户端密钥，请勿泄露 |
+
+未配置或凭据无效时，在线 API 会返回 `401`。首次请求时插件会自动完成客户端实例注册，
+并在插件目录生成 `.neko_client_identity.json` 保存实例私钥与短期令牌；该文件已被 `.gitignore`
+排除，请勿提交或分享。`client_secret` 仅在实例注册/续签时使用，业务请求通过 Client ID、
+实例令牌和每请求签名完成鉴权。
 
 ### API 安全与客户端兼容
 
 默认 API 地址为 `https://music.nekocore.cn`。插件按 Neko 云音乐 API 最新约定携带完整浏览器形态
 请求头（`User-Agent` / `Accept` / `Accept-Language` / `Origin`），并用 `X-Neko-Client` 标注来源；
-音乐搜索与音频解析均按约定处理一次性 nonce。
+音乐搜索与音频解析均按约定处理一次性 nonce、客户端实例令牌和请求签名。
 高难度安全挑战会在后台有限度地计算；若服务端要求的难度超出插件处理能力，请稍后重试。
 
 接口约定详见 [NekoMusicDocs](https://github.com/FantasyNetworkCN/NekoMusicDocs)，包括
+[客户端身份与 Client ID](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E5%AE%A2%E6%88%B7%E7%AB%AF%E8%BA%AB%E4%BB%BD%E4%B8%8EClient-ID.md)、
 [防爬与客户端识别](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E9%98%B2%E7%88%AC%E4%B8%8E%E5%AE%A2%E6%88%B7%E7%AB%AF%E8%AF%86%E5%88%AB.md)、
 [请求防重放](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E8%AF%B7%E6%B1%82%E9%98%B2%E9%87%8D%E6%94%BE.md)和
 [滑块人机验证](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E6%BB%91%E5%9D%97%E4%B8%8E%E4%BA%BA%E6%9C%BA%E9%AA%8C%E8%AF%81.md)。
@@ -132,7 +143,8 @@
 ## 依赖项
 
 - aiohttp >= 3.8.0
-- Pillow >= 9.0.0 (PIL)
+- Pillow >= 10.0.0 (PIL)
+- cryptography >= 41.0.0
 
 ## 字体说明
 

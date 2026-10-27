@@ -1,4 +1,16 @@
 {
+    "client_id": {
+        "description": "NekoMusic Client ID",
+        "type": "string",
+        "default": "",
+        "hint": "在 NekoMusicDocs 申请并分配给本客户端的 Client ID，必填；未填写时在线 API 将返回 401"
+    },
+    "client_secret": {
+        "description": "NekoMusic Client Secret",
+        "type": "string",
+        "default": "",
+        "hint": "与 Client ID 配对的 Client Secret，必填；请勿泄露或提交到公开仓库"
+    },
     "use_local_server": {
         "description": "使用本机服务器",
         "type": "bool",
