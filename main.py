@@ -1,6 +1,4 @@
 import asyncio
-import base64
-import hashlib
 import io
 import json
 import os
@@ -9,25 +7,14 @@ import shutil
 import tempfile
 import time
 import traceback
-import textwrap
-import uuid
-from typing import Dict, List, Tuple
-from urllib.parse import urlencode, urlsplit
+from typing import List, Tuple
 
 import aiohttp
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
 from PIL import Image, ImageDraw, ImageFont
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
-
-
-class NekoClientAuthError(RuntimeError):
-    def __init__(self, message: str, status: int | None = None):
-        super().__init__(message)
-        self.status = status
 
 
 class MusicSearchDrawer:
@@ -62,6 +49,8 @@ class MusicSearchDrawer:
     HEADER_HEIGHT = 140  # 标题区域高度（增加）
     ITEM_HEIGHT = 120    # 每首歌曲的高度
     FOOTER_HEIGHT = 60   # 底部高度（减少）
+    # 高度超过 Telegram 的 2560px 图片限制时改用文本列表展示。
+    MAX_IMAGE_RESULTS = 18
 
     def __init__(self):
         self._load_fonts()
@@ -369,22 +358,12 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "1.9.6", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "2.0.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
-    API_CLIENT_VERSION = "1.9.6"
-    DEFAULT_CLIENT_PLATFORM = "pc"
-    CLIENT_IDENTITY_FILENAME = ".neko_client_identity.json"
-    CLIENT_TOKEN_REFRESH_MARGIN = 60
-    # 服务端 /api/* 会区分客户端：X-Neko-Client 必须是 <平台>+<版本>，
-    # 且平台必须与 Client ID 绑定平台一致。第三方客户端使用版本化原生 UA，
-    # 伪装浏览器 UA 会被 WAF 降级为 HTML 挑战页。
-    API_USER_AGENT = f"NekoMusic-PC/{API_CLIENT_VERSION}"
-    NONCE_BATCH_SIZE = 8
-    # 服务端基准难度就是 20 bit（加压每档 +2 bit），卡在 20 等于一加压就必失败，
-    # 留两档余量；更难时按约定退避重试，不硬解。
-    MAX_POW_DIFFICULTY = 24
-    MAX_POW_ATTEMPTS = 1 << (MAX_POW_DIFFICULTY + 3)
+    API_CLIENT_VERSION = "2.0.0"
+    API_USER_AGENT = f"NekoMusic-AstrBot/{API_CLIENT_VERSION}"
+    SUPPORTED_AUDIO_QUALITIES = {"standard", "hq", "sq", "hires"}
     # 消息 ID 在 aiocqhttp / OneBot 下常是负数（int64 溢出），必须允许前导减号，
     # 否则 [MID:-123] 匹配不到，只能退化成「用被引用消息自己的 ID」从而永远找不到结果。
     MID_PATTERN = re.compile(r"\[MID:(-?\d+)\]")
@@ -395,11 +374,6 @@ class Main(Star):
         # 存储每个消息的搜索结果，格式: {message_id: {"songs": [...], "platform": ..., "ts": ...}}
         # 使用消息ID而不是session_id，这样同一会话中多次搜索不会互相覆盖
         self.search_results = {}
-        self._nonce_pools = {"read": [], "write": []}
-        self._nonce_expiry = {"read": None, "write": None}
-        self._nonce_lock = asyncio.Lock()
-        self._client_identity_lock = asyncio.Lock()
-        self._client_identity = None
         # 搜索结果 TTL（秒），超时自动清理
         self.SEARCH_TTL = 1800  # 30 分钟
 
@@ -420,6 +394,9 @@ class Main(Star):
             self.use_local_server = self.config.get("use_local_server", schema_defaults.get("use_local_server", False))
             self.local_server_port = self.config.get("local_server_port", schema_defaults.get("local_server_port", 65535))
             self.audio_bitrate = int(self.config.get("audio_bitrate", schema_defaults.get("audio_bitrate", 96)))
+            self.audio_quality = str(
+                self.config.get("audio_quality", schema_defaults.get("audio_quality", "hq"))
+            ).strip().lower()
             self.cache_expire_hours = int(self.config.get("cache_expire_hours", schema_defaults.get("cache_expire_hours", 24)))
             self.auto_play_first = self.config.get("auto_play_first", schema_defaults.get("auto_play_first", False))
             self.show_auto_play_hint = self.config.get("show_auto_play_hint", schema_defaults.get("show_auto_play_hint", True))
@@ -429,34 +406,19 @@ class Main(Star):
             self.use_local_server = schema_defaults.get("use_local_server", False)
             self.local_server_port = schema_defaults.get("local_server_port", 65535)
             self.audio_bitrate = int(schema_defaults.get("audio_bitrate", 96))
+            self.audio_quality = str(schema_defaults.get("audio_quality", "hq")).strip().lower()
             self.cache_expire_hours = int(schema_defaults.get("cache_expire_hours", 24))
             self.auto_play_first = schema_defaults.get("auto_play_first", False)
             self.show_auto_play_hint = schema_defaults.get("show_auto_play_hint", True)
             self.show_play_link = schema_defaults.get("show_play_link", True)
             self.show_transcode_hint = schema_defaults.get("show_transcode_hint", True)
 
-        self.client_id = str(
-            self.config.get("client_id", schema_defaults.get("client_id", "")) or ""
-        ).strip()
-        self.client_secret = str(
-            self.config.get("client_secret", schema_defaults.get("client_secret", "")) or ""
-        ).strip()
-        self.client_platform = str(
-            self.config.get(
-                "client_platform",
-                schema_defaults.get("client_platform", self.DEFAULT_CLIENT_PLATFORM),
-            ) or self.DEFAULT_CLIENT_PLATFORM
-        ).strip().lower()
-
-        platform_valid = bool(re.fullmatch(r"[a-z][a-z0-9]{1,23}", self.client_platform))
-        self._client_auth_enabled = bool(self.client_id and self.client_secret and platform_valid)
-        if not self._client_auth_enabled:
-            if not platform_valid:
-                logger.warning("client_platform 格式无效，必须为 2-24 位小写字母/数字且以字母开头")
-            else:
-                logger.warning("未配置 client_id/client_secret，NekoMusic 在线 API 将返回 401")
-        else:
-            self._client_identity = self._load_or_create_client_identity()
+        if self.audio_quality not in self.SUPPORTED_AUDIO_QUALITIES:
+            logger.warning(
+                f"audio_quality={self.audio_quality} 无效，已回退为 hq；"
+                f"可选值: {', '.join(sorted(self.SUPPORTED_AUDIO_QUALITIES))}"
+            )
+            self.audio_quality = "hq"
 
         # 设置API基础URL
         if self.use_local_server:
@@ -472,477 +434,45 @@ class Main(Star):
         self._startup_cache_cleanup()
 
     def _api_headers(self) -> dict:
-        """浏览器形态请求头：UA 结构、Accept 与 Accept-Language 都是服务端判定依据。"""
-        headers = {
+        """公开 API 请求头。"""
+        return {
             "User-Agent": self.API_USER_AGENT,
-            "X-Neko-Client": f"{self.client_platform}+{self.API_CLIENT_VERSION}",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        if self.client_id:
-            headers["X-Neko-Client-Id"] = self.client_id
-        return headers
 
-    def _client_identity_path(self) -> str:
-        return os.path.join(os.path.dirname(__file__), self.CLIENT_IDENTITY_FILENAME)
-
-    @staticmethod
-    def _base64url(data: bytes) -> str:
-        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-    def _generate_client_identity(self) -> dict:
-        private_key = ec.generate_private_key(ec.SECP256R1())
-        private_key_pem = private_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ).decode("ascii")
+    def _media_headers(self) -> dict:
+        """媒体文件请求头。"""
         return {
-            "client_id": self.client_id,
-            "platform": self.client_platform,
-            "instance_id": str(uuid.uuid4()),
-            "private_key_pem": private_key_pem,
-            "token": None,
-            "expires_at": 0,
+            "User-Agent": self.API_USER_AGENT,
+            "Accept": "audio/*,*/*;q=0.8",
         }
-
-    def _load_or_create_client_identity(self) -> dict:
-        path = self._client_identity_path()
-        identity = None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                stored = json.load(f)
-            if (isinstance(stored, dict)
-                    and stored.get("client_id") == self.client_id
-                    and stored.get("platform") == self.client_platform
-                    and isinstance(stored.get("instance_id"), str)
-                    and isinstance(stored.get("private_key_pem"), str)):
-                serialization.load_pem_private_key(
-                    stored["private_key_pem"].encode("ascii"), password=None
-                )
-                identity = stored
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning(f"读取 NekoMusic 客户端实例身份失败，将重新生成: {e}")
-
-        if identity is None:
-            identity = self._generate_client_identity()
-        self._save_client_identity(identity)
-        return identity
-
-    def _save_client_identity(self, identity: dict) -> None:
-        path = self._client_identity_path()
-        temp_path = f"{path}.tmp"
-        try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(identity, f, ensure_ascii=False, indent=2)
-            os.chmod(temp_path, 0o600)
-            os.replace(temp_path, path)
-        except Exception as e:
-            logger.warning(f"保存 NekoMusic 客户端实例身份失败: {e}")
-
-    def _get_client_private_key(self):
-        identity = self._client_identity
-        if not isinstance(identity, dict) or not identity.get("private_key_pem"):
-            raise RuntimeError("NekoMusic 客户端实例私钥不存在")
-        return serialization.load_pem_private_key(
-            identity["private_key_pem"].encode("ascii"), password=None
-        )
-
-    def _client_public_key(self) -> str:
-        public_key = self._get_client_private_key().public_key()
-        der = public_key.public_bytes(
-            serialization.Encoding.DER,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        return self._base64url(der)
-
-    def _sign_client_identity_payload(self, payload: str) -> str:
-        signature = self._get_client_private_key().sign(
-            payload.encode("utf-8"), ec.ECDSA(hashes.SHA256())
-        )
-        return self._base64url(signature)
-
-    @staticmethod
-    async def _client_response_message(response: aiohttp.ClientResponse) -> str:
-        try:
-            body = await response.json(content_type=None)
-            message = body.get("message") if isinstance(body, dict) else None
-            if isinstance(message, str) and message:
-                return message
-        except Exception:
-            pass
-        return "无错误详情"
-
-    async def _get_client_challenge(
-        self, session: aiohttp.ClientSession, purpose: str
-    ) -> str:
-        url = f"{self.api_base_url}/api/client/challenge"
-        params = {
-            "client_id": self.client_id,
-            "platform": self.client_platform,
-            "purpose": purpose,
-        }
-        async with session.get(
-            url, params=params, headers=self._api_headers(), timeout=15
-        ) as response:
-            if response.status != 200:
-                message = await self._client_response_message(response)
-                raise NekoClientAuthError(
-                    f"获取客户端身份挑战失败，{self._api_status_message(response)}: {message}",
-                    response.status,
-                )
-            body = await response.json()
-
-        if not isinstance(body, dict):
-            raise NekoClientAuthError("服务端未返回有效的客户端身份挑战")
-        data = body.get("data")
-        challenge = data.get("challenge") if isinstance(data, dict) else None
-        if not body.get("success") or not isinstance(challenge, str) or not challenge:
-            raise NekoClientAuthError("服务端未返回有效的客户端身份挑战")
-        return challenge
-
-    async def _register_client_identity(
-        self, session: aiohttp.ClientSession, identity: dict
-    ) -> None:
-        challenge = await self._get_client_challenge(session, "register")
-        timestamp = int(time.time())
-        public_key = self._client_public_key()
-        payload = "\n".join([
-            "neko-client-register-v1",
-            self.client_id,
-            self.client_platform,
-            identity["instance_id"],
-            public_key,
-            challenge,
-            str(timestamp),
-        ])
-        signature = self._sign_client_identity_payload(payload)
-        request_body = {
-            "client_id": self.client_id,
-            "platform": self.client_platform,
-            "instance_id": identity["instance_id"],
-            "public_key": public_key,
-            "challenge": challenge,
-            "timestamp": timestamp,
-            "signature": signature,
-        }
-        headers = self._api_headers()
-        headers.update({
-            "Content-Type": "application/json",
-            "X-Neko-Client-Secret": self.client_secret,
-        })
-        url = f"{self.api_base_url}/api/client/register"
-        async with session.post(
-            url,
-            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-            headers=headers,
-            timeout=15,
-        ) as response:
-            if response.status != 200:
-                message = await self._client_response_message(response)
-                raise NekoClientAuthError(
-                    f"注册客户端实例失败，{self._api_status_message(response)}: {message}",
-                    response.status,
-                )
-            body = await response.json()
-
-        data = body.get("data") if isinstance(body, dict) else None
-        token = data.get("token") if isinstance(data, dict) else None
-        if not body.get("success") or not isinstance(token, str) or not token:
-            raise NekoClientAuthError("客户端实例注册响应缺少 token")
-
-        identity["token"] = token
-        expires_at = data.get("expires_at")
-        identity["expires_at"] = expires_at if isinstance(expires_at, (int, float)) else 0
-        self._client_identity = identity
-        self._save_client_identity(identity)
-        logger.info("NekoMusic 客户端实例注册成功")
-
-    async def _renew_client_token(
-        self, session: aiohttp.ClientSession, identity: dict
-    ) -> None:
-        challenge = await self._get_client_challenge(session, "token")
-        timestamp = int(time.time())
-        payload = "\n".join([
-            "neko-client-token-v1",
-            self.client_id,
-            self.client_platform,
-            identity["instance_id"],
-            challenge,
-            str(timestamp),
-        ])
-        signature = self._sign_client_identity_payload(payload)
-        request_body = {
-            "client_id": self.client_id,
-            "platform": self.client_platform,
-            "instance_id": identity["instance_id"],
-            "challenge": challenge,
-            "timestamp": timestamp,
-            "signature": signature,
-        }
-        headers = self._api_headers()
-        headers.update({
-            "Content-Type": "application/json",
-            "X-Neko-Client-Secret": self.client_secret,
-        })
-        url = f"{self.api_base_url}/api/client/token"
-        async with session.post(
-            url,
-            data=json.dumps(request_body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-            headers=headers,
-            timeout=15,
-        ) as response:
-            if response.status != 200:
-                message = await self._client_response_message(response)
-                raise NekoClientAuthError(
-                    f"续签客户端实例令牌失败，{self._api_status_message(response)}: {message}",
-                    response.status,
-                )
-            body = await response.json()
-
-        data = body.get("data") if isinstance(body, dict) else None
-        token = data.get("token") if isinstance(data, dict) else None
-        if not body.get("success") or not isinstance(token, str) or not token:
-            raise NekoClientAuthError("客户端实例令牌续签响应缺少 token")
-
-        identity["token"] = token
-        expires_at = data.get("expires_at")
-        identity["expires_at"] = expires_at if isinstance(expires_at, (int, float)) else 0
-        self._client_identity = identity
-        self._save_client_identity(identity)
-        logger.info("NekoMusic 客户端实例令牌续签成功")
-
-    async def _ensure_client_identity(self, session: aiohttp.ClientSession) -> None:
-        if not self._client_auth_enabled:
-            return
-        async with self._client_identity_lock:
-            identity = self._client_identity or self._load_or_create_client_identity()
-            token = identity.get("token")
-            expires_at = identity.get("expires_at")
-            now = time.time()
-            if (isinstance(token, str) and token
-                    and isinstance(expires_at, (int, float))
-                    and expires_at > now + self.CLIENT_TOKEN_REFRESH_MARGIN):
-                return
-
-            if isinstance(token, str) and token:
-                try:
-                    await self._renew_client_token(session, identity)
-                    return
-                except Exception as e:
-                    logger.warning(f"NekoMusic 客户端令牌续签失败，将重新注册: {e}")
-
-            try:
-                await self._register_client_identity(session, identity)
-                return
-            except NekoClientAuthError as e:
-                if e.status != 401:
-                    raise
-                logger.warning("客户端实例身份被拒绝，生成新的实例身份后重试")
-
-            identity = self._generate_client_identity()
-            self._client_identity = identity
-            self._save_client_identity(identity)
-            await self._register_client_identity(session, identity)
-
-    def _invalidate_client_token(self) -> None:
-        if not isinstance(self._client_identity, dict):
-            return
-        self._client_identity["token"] = None
-        self._client_identity["expires_at"] = 0
-        self._save_client_identity(self._client_identity)
-
-    def _sign_api_request(
-        self, method: str, path: str, raw_query: str, body_hash: str,
-        timestamp: str, nonce: str
-    ) -> str:
-        payload = "\n".join([
-            "neko-client-v1",
-            method.upper(),
-            path,
-            raw_query,
-            self.client_id,
-            self._client_identity["instance_id"],
-            self.client_platform,
-            timestamp,
-            body_hash,
-            nonce,
-        ])
-        return self._sign_client_identity_payload(payload)
 
     def _api_status_message(self, response: aiohttp.ClientResponse) -> str:
         message = f"HTTP {response.status}"
         retry_after = response.headers.get("Retry-After")
         if retry_after:
             message += f"（Retry-After: {retry_after} 秒）"
-        if response.status == 401:
-            message += "（客户端身份无效，请检查 client_id/client_secret）"
         return message
-
-    @staticmethod
-    def _solve_replay_challenge(seed: str, difficulty: int, max_attempts: int) -> str:
-        """Find the challenge proof without exceeding the configured work budget."""
-        if not 0 <= difficulty <= 256:
-            raise RuntimeError(f"服务端返回了无效的 PoW 难度: {difficulty}")
-
-        target = 1 << (256 - difficulty) if difficulty else 1 << 256
-        for counter in range(max_attempts):
-            digest = hashlib.sha256(f"{seed}:{counter}".encode("utf-8")).digest()
-            if int.from_bytes(digest, "big") < target:
-                return str(counter)
-        raise RuntimeError(
-            f"服务端 PoW 难度超出本客户端处理能力（最大 {Main.MAX_POW_DIFFICULTY} bit），"
-            "请稍后重试"
-        )
-
-    async def _fetch_nonce_batch(self, session: aiohttp.ClientSession, nonce_type: str) -> None:
-        count = self.NONCE_BATCH_SIZE
-        requested = {"read": count if nonce_type == "read" else 0,
-                     "write": count if nonce_type == "write" else 0}
-        headers = self._api_headers()
-        challenge_url = f"{self.api_base_url}/api/replay/challenge"
-        nonce_url = f"{self.api_base_url}/api/replay/nonce"
-
-        for attempt in range(2):
-            async with session.get(
-                challenge_url, params=requested, headers=headers, timeout=15
-            ) as response:
-                if response.status != 200:
-                    raise RuntimeError(
-                        f"获取 API 安全挑战失败，{self._api_status_message(response)}"
-                    )
-                challenge_body = await response.json()
-
-            challenge_data = challenge_body.get("data")
-            if not challenge_body.get("success") or not isinstance(challenge_data, dict):
-                raise RuntimeError("服务端未返回可识别的 API 安全挑战")
-            if challenge_data.get("algorithm") != "sha256-leading-zero-bits":
-                if attempt == 0:
-                    continue
-                raise RuntimeError("服务端返回了不支持的 API 安全挑战算法")
-
-            seed = challenge_data.get("seed")
-            challenge = challenge_data.get("challenge")
-            difficulty = challenge_data.get("difficulty")
-            if (not isinstance(seed, str) or not isinstance(challenge, str)
-                    or not isinstance(difficulty, int) or isinstance(difficulty, bool)):
-                raise RuntimeError("服务端 API 安全挑战字段无效")
-            if difficulty > self.MAX_POW_DIFFICULTY:
-                raise RuntimeError(
-                    f"服务端 PoW 难度超出本客户端处理能力（最大 "
-                    f"{self.MAX_POW_DIFFICULTY} bit），请稍后重试"
-                )
-
-            proof = await asyncio.to_thread(
-                self._solve_replay_challenge, seed, difficulty, self.MAX_POW_ATTEMPTS
-            )
-            async with session.get(
-                nonce_url,
-                params={**requested, "challenge": challenge, "proof": proof},
-                headers=headers,
-                timeout=15,
-            ) as response:
-                if response.status == 409 and attempt == 0:
-                    continue
-                if response.status != 200:
-                    raise RuntimeError(
-                        f"领取 API nonce 失败，{self._api_status_message(response)}"
-                    )
-                nonce_body = await response.json()
-
-            nonce_data = nonce_body.get("data")
-            nonce_lists = nonce_data.get("nonces") if isinstance(nonce_data, dict) else None
-            values = nonce_lists.get(nonce_type) if isinstance(nonce_lists, dict) else None
-            if (not nonce_body.get("success") or not isinstance(values, list)
-                    or len(values) < count
-                    or any(not isinstance(value, str) or not value for value in values[:count])):
-                raise RuntimeError("服务端返回的 API nonce 列表无效")
-
-            expires_in = nonce_data.get("expiresIn")
-            expiry = None
-            if isinstance(expires_in, (int, float)) and expires_in > 0:
-                expiry = time.monotonic() + expires_in
-            self._nonce_pools[nonce_type] = values[:count]
-            self._nonce_expiry[nonce_type] = expiry
-            return
-
-        raise RuntimeError("API nonce 挑战兑换被拒绝，请稍后重试")
-
-    async def _get_api_nonce(self, session: aiohttp.ClientSession, method: str) -> str:
-        nonce_type = "read" if method.upper() == "GET" else "write"
-        async with self._nonce_lock:
-            expiry = self._nonce_expiry[nonce_type]
-            if expiry is not None and time.monotonic() >= expiry:
-                self._nonce_pools[nonce_type].clear()
-            if not self._nonce_pools[nonce_type]:
-                await self._fetch_nonce_batch(session, nonce_type)
-            return self._nonce_pools[nonce_type].pop()
 
     async def _request_api(
         self, session: aiohttp.ClientSession, method: str, url: str, **kwargs
     ) -> aiohttp.ClientResponse:
         headers = self._api_headers()
         headers.update(kwargs.pop("headers", {}))
-        params = kwargs.pop("params", None)
-        if params is not None:
-            query = urlencode(params, doseq=True)
-            if query:
-                url = f"{url}{'&' if '?' in url else '?'}{query}"
-
-        json_payload = kwargs.pop("json", None)
-        body = kwargs.pop("data", None)
-        if json_payload is not None:
-            body = json.dumps(
-                json_payload, ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")
-            headers.setdefault("Content-Type", "application/json")
-        elif isinstance(body, str):
-            body = body.encode("utf-8")
-        if body is None:
-            body = b""
-        if body:
-            kwargs["data"] = body
-
-        body_hash = hashlib.sha256(body).hexdigest()
-        parsed_url = urlsplit(url)
-        path = parsed_url.path or "/"
-        raw_query = parsed_url.query
-
         for attempt in range(3):
-            await self._ensure_client_identity(session)
-            nonce = await self._get_api_nonce(session, method)
-            request_headers = dict(headers)
-            request_headers["X-Neko-Nonce"] = nonce
-            if self._client_auth_enabled:
-                timestamp = str(int(time.time()))
-                request_headers.update({
-                    "X-Neko-Client-Id": self.client_id,
-                    "X-Neko-Client-Instance": self._client_identity["instance_id"],
-                    "X-Neko-Client-Token": self._client_identity["token"],
-                    "X-Neko-Client-Timestamp": timestamp,
-                    "X-Neko-Client-Signature": self._sign_api_request(
-                        method, path, raw_query, body_hash, timestamp, nonce
-                    ),
-                })
             response = await session.request(
-                method, url, headers=request_headers, **kwargs
+                method, url, headers=headers, **kwargs
             )
-            if response.status == 409 and attempt < 2:
-                response.release()
-                nonce_type = "read" if method.upper() == "GET" else "write"
-                async with self._nonce_lock:
-                    self._nonce_pools[nonce_type].clear()
-                    self._nonce_expiry[nonce_type] = None
-                continue
-            if response.status == 401 and self._client_auth_enabled and attempt < 2:
-                response.release()
-                self._invalidate_client_token()
-                continue
-            if response.status != 409:
+            if response.status != 429 or attempt >= 2:
                 return response
-            return response
+            retry_after = response.headers.get("Retry-After", "")
+            response.release()
+            try:
+                delay = float(retry_after)
+            except ValueError:
+                delay = 1.0
+            await asyncio.sleep(min(max(delay, 1.0), 10.0))
         raise RuntimeError("API 请求重试失败")
 
     @filter.regex(r"^点歌.*")
@@ -964,7 +494,10 @@ class Main(Star):
                     session, "POST", api_url, json=json_data, timeout=10
                 ) as response:
                     if response.status == 200:
-                        data = await response.json()
+                        data = await response.json(content_type=None)
+                        if not isinstance(data, dict):
+                            yield event.plain_result("搜索失败, API 返回了无法识别的数据")
+                            return
                         result_data = self.handle_search_result(data)
 
                         # 获取当前消息的消息ID（用户发送的点歌消息ID）
@@ -977,7 +510,7 @@ class Main(Star):
                         # 保存搜索结果前先清理过期条目
                         self._cleanup_expired_searches()
                         results = data.get("results")
-                        if results is None:
+                        if not isinstance(results, list):
                             results = []
                         self.search_results[user_message_id] = {
                             "songs": results,
@@ -1006,9 +539,18 @@ class Main(Star):
                             yield event.plain_result(f"🎵 未找到与 \"{keyword}\" 相关的歌曲")
                             return
 
+                        # 结果过多时图片会超过 Telegram 高度限制，改用完整文本列表。
+                        if total_count > self.drawer.MAX_IMAGE_RESULTS:
+                            yield event.plain_result(
+                                self._build_text_results(
+                                    keyword, results, user_message_id
+                                )
+                            )
+                            return
+
                         # 使用 drawer 绘制图片
                         image_bytes = await self.drawer.draw_search_result(
-                            keyword, result_data, session, self._api_headers()
+                            keyword, result_data, session, self._media_headers()
                         )
 
                         if image_bytes:
@@ -1037,7 +579,7 @@ class Main(Star):
             songs = data["results"]
 
             # 检查 songs 是否为 None
-            if songs is None:
+            if not isinstance(songs, list):
                 logger.error("API 返回的 results 为 None")
                 result["songs"] = [{"cover_url": None, "text": "搜索结果为空"}]
                 return result
@@ -1050,10 +592,14 @@ class Main(Star):
 
             # 显示所有歌曲
             for idx, song in enumerate(songs, 1):
+                if not isinstance(song, dict):
+                    continue
                 song_name = song.get("name", song.get("title", "未知歌曲"))
                 artist = song.get("artist", song.get("singer", song.get("ar", "未知歌手")))
                 album = song.get("album", song.get("al", "未知专辑"))
                 song_id = song.get("id", "")
+                duration = self._format_duration(song.get("duration"))
+                quality = song.get("maxQuality")
 
                 # 打印完整的歌曲数据结构用于调试
                 logger.info(f"歌曲 {idx} 数据: {song}")
@@ -1066,7 +612,12 @@ class Main(Star):
                 # 构建歌曲信息文本
                 song_text = f"{song_name}\n"
                 song_text += f"歌手: {artist}\n"
-                song_text += f"专辑: {album}\n"
+                album_line = f"专辑: {album}"
+                if duration:
+                    album_line += f" · {duration}"
+                if isinstance(quality, str) and quality:
+                    album_line += f" · {quality}"
+                song_text += f"{album_line}\n"
                 if song_id:
                     song_text += f"平台音乐ID: {song_id}"
 
@@ -1078,6 +629,37 @@ class Main(Star):
             result["songs"] = [{"cover_url": None, "text": f"搜索失败: {data.get('message', '未知错误')}"}]
 
         return result
+
+    @staticmethod
+    def _format_duration(duration) -> str:
+        """把接口返回的秒数格式化为 mm:ss。"""
+        try:
+            seconds = int(float(duration))
+        except (TypeError, ValueError):
+            return ""
+        if seconds < 0:
+            return ""
+        minutes, seconds = divmod(seconds, 60)
+        return f"{minutes}:{seconds:02d}"
+
+    def _build_text_results(self, keyword: str, songs: list, message_id: str) -> str:
+        """结果过多无法生成单张图片时，输出可直接选择序号的文本列表。"""
+        lines = [
+            f"🎵 搜索结果: {keyword}",
+            f"共找到 {len(songs)} 首歌曲",
+            "💡 回复序号即可播放，例如: 1",
+            "",
+        ]
+        for index, song in enumerate(songs, 1):
+            if not isinstance(song, dict):
+                continue
+            title = song.get("title", song.get("name", "未知歌曲"))
+            artist = song.get("artist", song.get("singer", "未知歌手"))
+            duration = self._format_duration(song.get("duration"))
+            suffix = f" · {duration}" if duration else ""
+            lines.append(f"{index}. {title} - {artist}{suffix}")
+        lines.extend(["", f"[MID:{message_id}]"])
+        return "\n".join(lines)
 
     def _get_platform(self, event: AstrMessageEvent) -> str:
         """获取当前平台类型"""
@@ -1402,7 +984,7 @@ class Main(Star):
         send_type = "文件" if platform == 'discord' else "语音"
         if self.show_play_link:
             yield event.chain_result([
-                Comp.Plain(f"🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐{send_type}，请稍后\n平台内均为无损音质，发送可能较慢，请耐心等待..."),
+                Comp.Plain(f"🎶 Neko云音乐。听见好音乐\n🔗 {play_url}\n🎵 正在发送音乐{send_type}，请稍后\n音频发送可能需要一些时间，请耐心等待..."),
             ])
 
         # 下载音频并发送语音（流式管道转码 + 本地缓存）
@@ -1554,18 +1136,22 @@ class Main(Star):
         """把 /api/music/file/{id} 的响应解析成可直接下载的媒体直链。
 
         该接口返回的是 JSON 指针（{"success":true,"data":{"url":"/media/music/..."}}），
-        不是音频字节；音频本身由 /media/* 静态直链提供（CDN，无需 nonce）。
+        不是音频字节；音频本身由 /media/* 静态直链提供。
         失败返回 None。
         """
         api_url = f"{self.api_base_url}/api/music/file/{song_id}"
         try:
             async with await self._request_api(
-                session, "GET", api_url, timeout=15
+                session,
+                "GET",
+                api_url,
+                params={"quality": self.audio_quality},
+                timeout=15,
             ) as response:
                 if response.status != 200:
                     logger.error(f"解析音频地址失败, {self._api_status_message(response)}")
                     return None
-                body = await response.json()
+                body = await response.json(content_type=None)
         except Exception as e:
             logger.error(f"解析音频地址异常: {e}")
             return None
@@ -1600,7 +1186,9 @@ class Main(Star):
                                media_url: str, song_id, song_name: str) -> float | None:
         """HEAD 预检媒体直链大小，返回 MB 数；失败返回 None。"""
         try:
-            async with session.head(media_url, timeout=15, headers=self._api_headers()) as resp:
+            async with session.head(
+                media_url, timeout=15, headers=self._media_headers()
+            ) as resp:
                 cl = resp.headers.get("Content-Length")
                 if cl:
                     size_mb = int(cl) / (1024 * 1024)
@@ -1656,9 +1244,9 @@ class Main(Star):
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            # 流式下载 /media/* 直链（静态资源，不经 nonce）→ 直接喂给 ffmpeg stdin
+            # 流式下载 /media/* 直链 → 直接喂给 ffmpeg stdin
             async with session.get(
-                media_url, timeout=120, headers=self._api_headers()
+                media_url, timeout=120, headers=self._media_headers()
             ) as audio_resp:
                 if audio_resp.status != 200:
                     logger.error(f"下载音频失败, HTTP {audio_resp.status}")

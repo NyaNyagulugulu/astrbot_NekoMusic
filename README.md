@@ -2,7 +2,8 @@
 
 一个基于 AstrBot 框架的 Neko 云音乐点歌插件,支持群内点歌、搜索音乐并生成精美图片展示。
 
-# 警告。从`v1.7.2`版本更新肯能够会有安装失败错误。那么请你卸载重新安装
+> **2.0.0 升级提示**：旧版的 `client_id`、`client_platform`、`client_secret` 已不再使用，
+> 升级后可直接删除这三项配置，无需重新申请客户端凭据。
 
 ## 功能特性
 
@@ -27,7 +28,7 @@
 
 ### 方法二: 手动安装
 
-1. 下载插件压缩包或克隆仓库到 AstrBot 的 `data/plugins` 目录
+1. 下载插件压缩包或克隆仓库到 AstrBot 的 `data/addons/plugins` 目录
 2. 重启 AstrBot 或在插件管理中重载插件
 
 ## 使用方法
@@ -40,7 +41,10 @@
 点歌 Lemon
 点歌 告白气球
 点歌 周杰伦
+点歌 4855
 ```
+
+歌曲 ID 可直接从 Neko 云音乐详情页地址 `/detail/{歌曲ID}` 获取。
 
 插件会自动搜索并返回结果,包含:
 - 搜索结果统计信息
@@ -100,38 +104,37 @@
 搜索结果图片包含:
 - 渐变背景
 - 搜索关键词和结果数量
-- 每首歌的封面(100x100)
-- 歌曲名称、歌手、专辑、ID
+- 每首歌的封面(90x90)
+- 歌曲名称、歌手、专辑、时长、最高音质、ID
 - 底部版权信息
+
+搜索结果超过 18 首时，为避免图片超过 Telegram 的高度限制，会改用完整文本列表展示。
 
 ## 配置说明
 
-在线 API 需要配置以下项目（请通过 NekoMusic 官方审核流程申请）：
+在线 API 为公开接口，不需要 Client ID、Client Secret 或额外鉴权配置。插件会优先读取
+AstrBot WebUI 中的配置，未配置时使用下列默认值：
 
 | 配置项 | 说明 |
 |--------|------|
-| `client_id` | NekoMusic 分配的客户端 ID |
-| `client_platform` | 与 Client ID 绑定的平台，默认 `pc`，必须完全一致 |
-| `client_secret` | 与 Client ID 配对的客户端密钥，请勿泄露 |
+| `use_local_server` | 是否改用本机服务，默认 `false` |
+| `local_server_port` | 本机服务端口，默认 `65535` |
+| `audio_quality` | 请求音源音质，可选 `standard` / `hq` / `sq` / `hires`，默认 `hq` |
+| `audio_bitrate` | 发送前转码码率，默认 `96` kbps |
+| `cache_expire_hours` | 本地音频缓存时长，默认 `24` 小时 |
+| `auto_play_first` | 是否自动播放第一条搜索结果，默认 `false` |
+| `show_auto_play_hint` | 是否显示自动播放提示，默认 `true` |
+| `show_play_link` | 是否显示详情页播放链接，默认 `true` |
+| `show_transcode_hint` | 是否显示下载转码提示，默认 `true` |
 
-未配置或凭据无效时，在线 API 会返回 `401`。首次请求时插件会自动完成客户端实例注册，
-并在插件目录生成 `.neko_client_identity.json` 保存实例私钥与短期令牌；该文件已被 `.gitignore`
-排除，请勿提交或分享。`client_secret` 仅在实例注册/续签时使用，业务请求通过 Client ID、
-实例令牌和每请求签名完成鉴权。
+### API 说明
 
-### API 安全与客户端兼容
+默认 API 地址为 `https://music.nekocore.cn`。插件使用当前文档中的公开接口：
+`POST /api/music/search` 搜索歌曲，`GET /api/music/file/{id}?quality=...` 获取音源直链。
+服务端会对请求频率进行限制，返回 `429` 时插件会读取 `Retry-After` 并有限次重试。
 
-默认 API 地址为 `https://music.nekocore.cn`。插件按 Neko 云音乐 API 最新约定携带版本化原生
-客户端 UA、`Accept` / `Accept-Language`，并用 `X-Neko-Client` 标注平台与版本；
-音乐搜索与音频解析均按约定处理一次性 nonce、客户端实例令牌和请求签名。
-高难度安全挑战会在后台有限度地计算；若服务端要求的难度超出插件处理能力，请稍后重试。
-
-接口约定详见 [NekoMusicDocs](https://github.com/FantasyNetworkCN/NekoMusicDocs)，包括
-[客户端身份与 Client ID](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E5%AE%A2%E6%88%B7%E7%AB%AF%E8%BA%AB%E4%BB%BD%E4%B8%8EClient-ID.md)、
-[防爬与客户端识别](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E9%98%B2%E7%88%AC%E4%B8%8E%E5%AE%A2%E6%88%B7%E7%AB%AF%E8%AF%86%E5%88%AB.md)、
-[请求防重放](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E8%AF%B7%E6%B1%82%E9%98%B2%E9%87%8D%E6%94%BE.md)和
-[滑块人机验证](https://github.com/FantasyNetworkCN/NekoMusicDocs/blob/main/API-%E6%BB%91%E5%9D%97%E4%B8%8E%E4%BA%BA%E6%9C%BA%E9%AA%8C%E8%AF%81.md)。
-本插件只调用公开音乐搜索与播放接口，不涉及注册或滑块验证流程。
+接口约定以 [NekoMusicDocs](https://github.com/FantasyNetworkCN/NekoMusicDocs) 为准。插件只调用
+公开音乐搜索、封面与播放接口，不涉及用户登录、注册或人机验证流程。
 
 ### 注意事项
 
@@ -145,7 +148,7 @@
 
 - aiohttp >= 3.8.0
 - Pillow >= 10.0.0 (PIL)
-- cryptography >= 41.0.0
+- 系统依赖 `ffmpeg`（用于音频转码与压缩）
 
 ## 字体说明
 

@@ -1,22 +1,4 @@
 {
-    "client_id": {
-        "description": "NekoMusic Client ID",
-        "type": "string",
-        "default": "",
-        "hint": "在 NekoMusicDocs 申请并分配给本客户端的 Client ID，必填；未填写时在线 API 将返回 401"
-    },
-    "client_platform": {
-        "description": "NekoMusic Client 平台",
-        "type": "string",
-        "default": "other",
-        "hint": "必须与 Client ID 申请时绑定的平台完全一致（如 pc、web、android），不一致会返回 401"
-    },
-    "client_secret": {
-        "description": "NekoMusic Client Secret",
-        "type": "string",
-        "default": "",
-        "hint": "与 Client ID 配对的 Client Secret，必填；请勿泄露或提交到公开仓库"
-    },
     "use_local_server": {
         "description": "使用本机服务器",
         "type": "bool",
@@ -34,6 +16,12 @@
         "type": "int",
         "default": 96,
         "hint": "压缩音频的目标码率，越低文件越小。推荐 64-128"
+    },
+    "audio_quality": {
+        "description": "音源请求音质",
+        "type": "string",
+        "default": "hq",
+        "hint": "可选 standard、hq、sq、hires；默认 hq 可减少下载量，插件最终仍会按音频码率转码"
     },
     "cache_expire_hours": {
         "description": "缓存过期时间(小时)",
