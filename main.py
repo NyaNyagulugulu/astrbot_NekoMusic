@@ -49,8 +49,6 @@ class MusicSearchDrawer:
     HEADER_HEIGHT = 140  # 标题区域高度（增加）
     ITEM_HEIGHT = 120    # 每首歌曲的高度
     FOOTER_HEIGHT = 60   # 底部高度（减少）
-    # 高度超过 Telegram 的 2560px 图片限制时改用文本列表展示。
-    MAX_IMAGE_RESULTS = 18
 
     def __init__(self):
         self._load_fonts()
@@ -358,10 +356,10 @@ class MusicSearchDrawer:
             return None
 
 
-@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "2.0.0", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
+@register("nekomusic", "NyaNyagulugulu", "Neko云音乐点歌插件", "2.0.1", "https://github.com/NyaNyagulugulu/astrbot_NekoMusic")
 class Main(Star):
     PUBLIC_API_BASE_URL = "https://music.nekocore.cn"
-    API_CLIENT_VERSION = "2.0.0"
+    API_CLIENT_VERSION = "2.0.1"
     API_USER_AGENT = f"NekoMusic-AstrBot/{API_CLIENT_VERSION}"
     SUPPORTED_AUDIO_QUALITIES = {"standard", "hq", "sq", "hires"}
     # 消息 ID 在 aiocqhttp / OneBot 下常是负数（int64 溢出），必须允许前导减号，
@@ -539,15 +537,6 @@ class Main(Star):
                             yield event.plain_result(f"🎵 未找到与 \"{keyword}\" 相关的歌曲")
                             return
 
-                        # 结果过多时图片会超过 Telegram 高度限制，改用完整文本列表。
-                        if total_count > self.drawer.MAX_IMAGE_RESULTS:
-                            yield event.plain_result(
-                                self._build_text_results(
-                                    keyword, results, user_message_id
-                                )
-                            )
-                            return
-
                         # 使用 drawer 绘制图片
                         image_bytes = await self.drawer.draw_search_result(
                             keyword, result_data, session, self._media_headers()
@@ -641,25 +630,6 @@ class Main(Star):
             return ""
         minutes, seconds = divmod(seconds, 60)
         return f"{minutes}:{seconds:02d}"
-
-    def _build_text_results(self, keyword: str, songs: list, message_id: str) -> str:
-        """结果过多无法生成单张图片时，输出可直接选择序号的文本列表。"""
-        lines = [
-            f"🎵 搜索结果: {keyword}",
-            f"共找到 {len(songs)} 首歌曲",
-            "💡 回复序号即可播放，例如: 1",
-            "",
-        ]
-        for index, song in enumerate(songs, 1):
-            if not isinstance(song, dict):
-                continue
-            title = song.get("title", song.get("name", "未知歌曲"))
-            artist = song.get("artist", song.get("singer", "未知歌手"))
-            duration = self._format_duration(song.get("duration"))
-            suffix = f" · {duration}" if duration else ""
-            lines.append(f"{index}. {title} - {artist}{suffix}")
-        lines.extend(["", f"[MID:{message_id}]"])
-        return "\n".join(lines)
 
     def _get_platform(self, event: AstrMessageEvent) -> str:
         """获取当前平台类型"""
